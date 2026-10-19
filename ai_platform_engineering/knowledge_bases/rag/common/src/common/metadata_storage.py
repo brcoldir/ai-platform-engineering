@@ -6,6 +6,7 @@ from common.models.rag import DataSourceInfo, IngestorInfo, MCPToolConfig, MCPBu
 from common.constants import (
   REDIS_DATASOURCE_PREFIX,
   REDIS_DATASOURCE_DOCUMENTS_PREFIX,
+  REDIS_JOB_DATASOURCE_TOUCHED_PREFIX,
   REDIS_INGESTOR_PREFIX,
   REDIS_MCP_TOOL_CONFIG_PREFIX,
   REDIS_MCP_BUILTIN_CONFIG_KEY,
@@ -92,6 +93,8 @@ class MetadataStorage:
     keys = []
     keys.extend(await self.redis_client.keys(f"{REDIS_DATASOURCE_PREFIX}{datasource_id}*"))
     keys.extend(await self.redis_client.keys(f"{REDIS_DATASOURCE_DOCUMENTS_PREFIX}{datasource_id}*"))
+    # Exact key (not a prefix match) so ids sharing a prefix keep their users.
+    keys.append(f"{REDIS_JOB_DATASOURCE_TOUCHED_PREFIX}{datasource_id}")
     if keys:
       await self.redis_client.delete(*keys)
 
