@@ -28,6 +28,10 @@ class JobStatus(str, Enum):
 
 TERMINAL_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_ERRORS, JobStatus.FAILED, JobStatus.TERMINATED})
 MAX_NOTIFICATION_RECIPIENTS = 50
+MAX_TOUCHED_USERS_CONSIDERED = 200
+# Job-hash fields used to notify each terminal outcome of a retry cycle at most once.
+NOTIFIED_TERMINAL_FIELD = "notified_terminal"
+NOTIFY_CYCLE_FIELD = "notify_cycle"
 
 
 def _text(value: Any) -> Optional[str]:
@@ -35,6 +39,46 @@ def _text(value: Any) -> Optional[str]:
   if isinstance(value, bytes):
     value = value.decode()
   return value if isinstance(value, str) and value else None
+
+
+def _safe_int(value: Any) -> int:
+  """Parse a Redis counter to int, defaulting to 0 for missing or non-numeric values."""
+  try:
+    return int(_text(value) or 0)
+  except ValueError:
+    return 0
+
+
+def _merge_recipients(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
+  """Union entries sharing a subject (case-sensitive) or email (case-insensitive), transitively, in first-seen order."""
+  parent = list(range(len(candidates)))
+
+  def find(i: int) -> int:
+    while parent[i] != i:
+      parent[i] = parent[parent[i]]
+      i = parent[i]
+    return i
+
+  owner_of_key: Dict[str, int] = {}
+  for index, candidate in enumerate(candidates):
+    keys = []
+    if candidate.get("subject"):
+      keys.append("s:" + candidate["subject"])
+    if candidate.get("email"):
+      keys.append("e:" + candidate["email"].lower())
+    for key in keys:
+      if key in owner_of_key:
+        root_a, root_b = find(owner_of_key[key]), find(index)
+        if root_a != root_b:
+          parent[max(root_a, root_b)] = min(root_a, root_b)
+      else:
+        owner_of_key[key] = index
+  groups: Dict[int, Dict[str, str]] = {}
+  for index, candidate in enumerate(candidates):
+    merged = groups.setdefault(find(index), {})
+    for key, value in candidate.items():
+      merged.setdefault(key, value)
+  return [groups[root] for root in sorted(groups)]
 
 
 class JobInfo(BaseModel):
@@ -273,11 +317,20 @@ class JobManager:
         await self.redis_client.sadd(f"{REDIS_JOB_DATASOURCE_TOUCHED_PREFIX}{datasource_id}", json.dumps(touch, sort_keys=True))  # type: ignore
       if new_status is None or new_status.value == previous_status:
         return
-      previous_terminal = previous_status in {s.value for s in TERMINAL_STATUSES}
-      if new_status in TERMINAL_STATUSES and not previous_terminal:
-        await self._emit_job_event(job_id, datasource_id, new_status)
-      elif new_status == JobStatus.IN_PROGRESS and previous_status != JobStatus.IN_PROGRESS.value and not previous_terminal:
-        await self._emit_job_event(job_id, datasource_id, new_status)
+      job_key = self._get_job_key(job_id)
+      if new_status in TERMINAL_STATUSES:
+        # Atomic claim: only the first terminal transition of a retry cycle is notified.
+        if await self.redis_client.hsetnx(job_key, NOTIFIED_TERMINAL_FIELD, new_status.value):  # type: ignore
+          await self._emit_job_event(job_id, datasource_id, new_status)
+        else:
+          logger.info(f"Suppressed duplicate/contradictory terminal notification for job {job_id} ({new_status.value})")
+      elif new_status == JobStatus.IN_PROGRESS:
+        # A (re)start opens a new cycle: re-arm terminal notification and bump the attempt counter.
+        previous_terminal = previous_status in {s.value for s in TERMINAL_STATUSES}
+        await self.redis_client.hdel(job_key, NOTIFIED_TERMINAL_FIELD)  # type: ignore
+        await self.redis_client.hincrby(job_key, NOTIFY_CYCLE_FIELD, 1)  # type: ignore
+        if not previous_terminal:
+          await self._emit_job_event(job_id, datasource_id, new_status)
     except Exception as error:  # noqa: BLE001 - notifications must never affect job state
       logger.warning(f"Notification bookkeeping failed for job {job_id} datasource {datasource_id}: {error}")
 
@@ -293,27 +346,17 @@ class JobManager:
     if triggered:
       candidates.append(triggered)
     if datasource_id:
-      for raw in await self.redis_client.smembers(f"{REDIS_JOB_DATASOURCE_TOUCHED_PREFIX}{datasource_id}"):  # type: ignore
+      raw_members = await self.redis_client.smembers(f"{REDIS_JOB_DATASOURCE_TOUCHED_PREFIX}{datasource_id}")  # type: ignore
+      # Bound the work and keep the order deterministic (set order is arbitrary).
+      for raw in sorted((_text(r) or "" for r in raw_members))[:MAX_TOUCHED_USERS_CONSIDERED]:
         try:
-          entry = json.loads(_text(raw) or "{}")
+          entry = json.loads(raw or "{}")
         except json.JSONDecodeError:
           logger.warning(f"Ignoring malformed touched-user entry for datasource {datasource_id}")
           continue
         if isinstance(entry, dict) and (entry.get("subject") or entry.get("email")):
           candidates.append({k: entry[k] for k in ("subject", "email") if isinstance(entry.get(k), str) and entry[k]})
-    # Merge entries that share a subject or email so one person is one recipient.
-    merged: List[Dict[str, str]] = []
-    for candidate in candidates:
-      match = next(
-        (m for m in merged if (candidate.get("subject") and candidate.get("subject") == m.get("subject")) or (candidate.get("email") and candidate["email"].lower() == m.get("email", "").lower())),
-        None,
-      )
-      if match is None:
-        merged.append(dict(candidate))
-      else:
-        for key, value in candidate.items():
-          match.setdefault(key, value)
-    return merged[:MAX_NOTIFICATION_RECIPIENTS]
+    return _merge_recipients(candidates)[:MAX_NOTIFICATION_RECIPIENTS]
 
   async def _emit_job_event(self, job_id: str, datasource_id: Optional[str], new_status: JobStatus) -> None:
     """Build and schedule the ingestion.* event for a status transition."""
@@ -329,7 +372,7 @@ class JobManager:
           logger.warning(f"Datasource record for {datasource_id} is not valid JSON; notifying with id only")
     name = _text(datasource_record.get("name")) or datasource_id or job_id
     counters = await self.redis_client.hmget(self._get_job_key(job_id), ["document_count", "chunk_count", "failed_counter"])  # type: ignore
-    documents, chunks, failed = (int(_text(v) or 0) for v in counters)
+    documents, chunks, failed = (_safe_int(v) for v in counters)
     if new_status == JobStatus.IN_PROGRESS:
       event_type, title, summary = "ingestion.started", f"Ingestion started: {name}", "Ingestion has started."
     elif new_status == JobStatus.FAILED:
@@ -339,13 +382,15 @@ class JobManager:
     else:
       suffix = f" with {failed} failed items" if new_status == JobStatus.COMPLETED_WITH_ERRORS else ""
       event_type, title, summary = "ingestion.completed", f"Ingestion completed: {name}", f"Ingested {documents} documents and {chunks} chunks{suffix}."
+    cycle = _safe_int(await self.redis_client.hget(self._get_job_key(job_id), NOTIFY_CYCLE_FIELD))  # type: ignore
+    attempt_id = job_id if cycle <= 1 else f"{job_id}:{cycle}"
     # Summary carries counts only: never job messages or error text, which may include document content or secrets.
     recipients = await self._notification_recipients(job_id, datasource_id, datasource_record)
     event = build_event(
       event_type=event_type,
       resource_type="datasource",
       resource_id=datasource_id or job_id,
-      attempt_id=job_id,
+      attempt_id=attempt_id,
       correlation_id=datasource_id,
       status=new_status.value,
       title=title,
@@ -497,6 +542,7 @@ class JobManager:
     success = bool(changed)
     if success:
       logger.warning(f"Marked stale pending job {job_id} as FAILED")
+      await self._after_write(job_id, None, JobStatus.PENDING.value, JobStatus.FAILED, None, None)
     return success
 
   async def terminate_job(self, job_id: str) -> bool:

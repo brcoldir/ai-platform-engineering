@@ -1,5 +1,7 @@
 """Notification emission from JobManager.upsert_job (ingestion.* events)."""
 
+import asyncio
+import itertools
 import json
 import urllib.error
 from typing import Any, Dict, List, Optional
@@ -9,7 +11,9 @@ import pytest
 
 from common import notifications_client as nc
 from common.constants import REDIS_DATASOURCE_PREFIX
+from common.constants import REDIS_JOB_DATASOURCE_TOUCHED_PREFIX
 from common.job_manager import JobManager, JobStatus
+from common.metadata_storage import MetadataStorage
 
 PUBLISH = "common.job_manager.schedule_publish"
 
@@ -23,17 +27,50 @@ class FakeRedis:
         self.strings: Dict[str, str] = {}
 
     async def exists(self, key: str) -> int:
+        await asyncio.sleep(0)
         return int(key in self.hashes)
 
     async def hget(self, key: str, field: str) -> Optional[str]:
+        await asyncio.sleep(0)
         return self.hashes.get(key, {}).get(field)
 
     async def hmget(self, key: str, fields: List[str]) -> List[Optional[str]]:
+        await asyncio.sleep(0)
         return [self.hashes.get(key, {}).get(f) for f in fields]
 
     async def hset(self, key: str, mapping: Dict[str, str]) -> int:
+        await asyncio.sleep(0)
         self.hashes.setdefault(key, {}).update(mapping)
         return len(mapping)
+
+    async def hsetnx(self, key: str, field: str, value: str) -> int:
+        await asyncio.sleep(0)
+        job = self.hashes.setdefault(key, {})
+        if field in job:
+            return 0
+        job[field] = value
+        return 1
+
+    async def hdel(self, key: str, *fields: str) -> int:
+        await asyncio.sleep(0)
+        job = self.hashes.get(key, {})
+        return sum(1 for f in fields if job.pop(f, None) is not None)
+
+    async def hincrby(self, key: str, field: str, amount: int = 1) -> int:
+        await asyncio.sleep(0)
+        job = self.hashes.setdefault(key, {})
+        job[field] = str(int(job.get(field, "0")) + amount)
+        return int(job[field])
+
+    async def eval(self, script: str, numkeys: int, key: str, *args: str) -> int:
+        """Emulates the compare-and-set script used by fail_stale_pending_job."""
+        await asyncio.sleep(0)
+        expected, new_status, message, completed_at = args
+        job = self.hashes.get(key, {})
+        if job.get("status") != expected:
+            return 0
+        job.update({"status": new_status, "message": message, "completed_at": completed_at})
+        return 1
 
     async def sadd(self, key: str, *values: str) -> int:
         self.sets.setdefault(key, set()).update(values)
@@ -48,6 +85,17 @@ class FakeRedis:
 
     async def get(self, key: str) -> Optional[str]:
         return self.strings.get(key)
+
+    async def keys(self, pattern: str) -> List[str]:
+        prefix = pattern.rstrip("*")
+        found = [k for store in (self.hashes, self.sets, self.strings) for k in store if k.startswith(prefix)]
+        return found
+
+    async def delete(self, *keys: str) -> int:
+        for key in keys:
+            for store in (self.hashes, self.sets, self.strings):
+                store.pop(key, None)
+        return len(keys)
 
 
 @pytest.fixture
@@ -206,3 +254,97 @@ async def test_kill_switch_and_missing_token_send_nothing(manager: JobManager, m
     monkeypatch.setenv("NOTIFICATIONS_INTERNAL_TOKEN", "")
     await manager.upsert_job("jh", status=JobStatus.COMPLETED, datasource_id="ds-1")
     assert calls == []
+
+
+def _types(publish: Any) -> List[str]:
+    return [e["type"] for e in _events(publish)]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_contradictory_terminal_writers_emit_one_event(manager: JobManager) -> None:
+    with patch(PUBLISH) as publish:
+        await manager.upsert_job("jx", status=JobStatus.IN_PROGRESS, datasource_id="ds-1")
+        await asyncio.gather(
+            manager.upsert_job("jx", status=JobStatus.COMPLETED, datasource_id="ds-1"),
+            manager.upsert_job("jx", status=JobStatus.FAILED, datasource_id="ds-1"),
+        )
+    terminal = [t for t in _types(publish) if t != "ingestion.started"]
+    assert len(terminal) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_cycles_notify_each_outcome_with_distinct_attempt_ids(manager: JobManager) -> None:
+    with patch(PUBLISH) as publish:
+        await manager.upsert_job("jr", status=JobStatus.PENDING, datasource_id="ds-1")
+        await manager.upsert_job("jr", status=JobStatus.IN_PROGRESS, datasource_id="ds-1")
+        await manager.upsert_job("jr", status=JobStatus.FAILED, datasource_id="ds-1")
+        await manager.upsert_job("jr", status=JobStatus.IN_PROGRESS, datasource_id="ds-1")
+        await manager.upsert_job("jr", status=JobStatus.FAILED, datasource_id="ds-1")
+        await manager.upsert_job("jr", status=JobStatus.IN_PROGRESS, datasource_id="ds-1")
+        await manager.upsert_job("jr", status=JobStatus.COMPLETED, datasource_id="ds-1")
+    events = _events(publish)
+    terminal = [e for e in events if e["type"] != "ingestion.started"]
+    assert [e["type"] for e in terminal] == ["ingestion.failed", "ingestion.failed", "ingestion.completed"]
+    assert len({e["attempt_id"] for e in terminal}) == 3
+    assert terminal[0]["attempt_id"] == "jr"
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_job_failure_emits_failed_event(manager: JobManager, redis_fake: FakeRedis) -> None:
+    with patch(PUBLISH) as publish:
+        await manager.upsert_job("js", status=JobStatus.PENDING, datasource_id="ds-1", triggered_by_subject="sub-a")
+        assert await manager.fail_stale_pending_job("js") is True
+        assert await manager.fail_stale_pending_job("js") is False
+    events = _events(publish)
+    assert [e["type"] for e in events] == ["ingestion.failed"]
+    assert events[0]["resource"] == {"type": "datasource", "id": "ds-1"}
+    assert "sub-a" in {r.get("subject") for r in events[0]["recipients"]}
+
+
+@pytest.mark.asyncio
+async def test_non_numeric_counters_do_not_lose_the_event(manager: JobManager, redis_fake: FakeRedis) -> None:
+    with patch(PUBLISH) as publish:
+        await manager.upsert_job("jn", status=JobStatus.IN_PROGRESS, datasource_id="ds-1")
+        redis_fake.hashes["job:jn"]["document_count"] = "1.0"
+        redis_fake.hashes["job:jn"]["chunk_count"] = "garbage"
+        await manager.upsert_job("jn", status=JobStatus.COMPLETED, datasource_id="ds-1")
+    assert _types(publish)[-1] == "ingestion.completed"
+    assert "0 documents" in _events(publish)[-1]["data"]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_recipient_merge_is_order_independent(manager: JobManager, redis_fake: FakeRedis) -> None:
+    entries = [{"email": "A@example.com"}, {"subject": "S"}, {"subject": "S", "email": "a@example.com"}]
+    for order in itertools.permutations(entries):
+        redis_fake.sets[f"{REDIS_JOB_DATASOURCE_TOUCHED_PREFIX}dsp"] = set()
+        redis_fake.sets[f"{REDIS_JOB_DATASOURCE_TOUCHED_PREFIX}dsp"].update(json.dumps(e, sort_keys=True) for e in order)
+        # smembers order is arbitrary: force every permutation
+        async def ordered(_key: str, order: Any = order) -> List[str]:
+            return [json.dumps(e, sort_keys=True) for e in order]
+
+        redis_fake.smembers = ordered  # type: ignore[method-assign]
+        result = await manager._notification_recipients("none", "dsp", {})
+        assert len(result) == 1, order
+        assert result[0]["subject"] == "S"
+        assert result[0]["email"].lower() == "a@example.com"
+
+
+@pytest.mark.asyncio
+async def test_touched_set_is_capped_and_creator_first(manager: JobManager, redis_fake: FakeRedis) -> None:
+    key = f"{REDIS_JOB_DATASOURCE_TOUCHED_PREFIX}ds-1"
+    for i in range(500):
+        redis_fake.sets.setdefault(key, set()).add(json.dumps({"subject": f"u{i:04d}"}))
+    first = await manager._notification_recipients("none", "ds-1", {"creator_subject": "sub-creator"})
+    second = await manager._notification_recipients("none", "ds-1", {"creator_subject": "sub-creator"})
+    assert first == second
+    assert first[0] == {"subject": "sub-creator"}
+    assert len(first) == 50
+    assert [r["subject"] for r in first[1:4]] == ["u0000", "u0001", "u0002"]
+
+
+@pytest.mark.asyncio
+async def test_delete_datasource_removes_touched_set(redis_fake: FakeRedis) -> None:
+    key = f"{REDIS_JOB_DATASOURCE_TOUCHED_PREFIX}ds-1"
+    redis_fake.sets[key] = {json.dumps({"subject": "sub-a"})}
+    await MetadataStorage(redis_fake).delete_datasource_info("ds-1")  # type: ignore[arg-type]
+    assert key not in redis_fake.sets
