@@ -162,3 +162,80 @@ def test_service_copies_match_canonical_client() -> None:
     ]
     for copy in copies:
         assert _normalized(copy) == canonical, f"{copy} drifted from utils/notifications/client.py"
+
+
+def _hung_server():
+    """Local TCP server that accepts connections and never replies."""
+    import socket
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(128)
+    return server, server.getsockname()[1]
+
+
+def test_hung_server_does_not_starve_default_executor_and_excess_is_dropped(monkeypatch) -> None:
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    server, port = _hung_server()
+    monkeypatch.setenv("NOTIFICATIONS_INTERNAL_URL", f"http://127.0.0.1:{port}")
+    monkeypatch.setattr(nc, "TIMEOUT_SECONDS", 0.5)
+
+    async def scenario() -> tuple[float, int, int]:
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
+        tasks = [nc.schedule_publish(_event()) for _ in range(60)]
+        scheduled = [t for t in tasks if t is not None]
+        started = time.monotonic()
+        await asyncio.wait_for(asyncio.to_thread(lambda: 1), timeout=10)
+        elapsed = time.monotonic() - started
+        await asyncio.gather(*scheduled, return_exceptions=True)
+        return elapsed, len(scheduled), len(tasks) - len(scheduled)
+
+    try:
+        elapsed, scheduled, dropped = asyncio.run(scenario())
+    finally:
+        server.close()
+    assert elapsed < 0.5
+    assert dropped > 0
+    assert scheduled <= nc.MAX_PENDING_PUBLISHES
+
+
+def test_redirect_is_rejected_without_following(monkeypatch) -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    hits: list[tuple[str, str]] = []
+
+    class Target(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            hits.append(("GET", self.headers.get("Authorization", "")))
+            self.send_response(202)
+            self.end_headers()
+
+        do_POST = do_GET
+
+        def log_message(self, *_a) -> None:
+            pass
+
+    target = HTTPServer(("127.0.0.1", 0), Target)
+
+    class Redirector(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_port}/x")
+            self.end_headers()
+
+        def log_message(self, *_a) -> None:
+            pass
+
+    redirector = HTTPServer(("127.0.0.1", 0), Redirector)
+    for srv in (target, redirector):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setenv("NOTIFICATIONS_INTERNAL_URL", f"http://127.0.0.1:{redirector.server_port}")
+    try:
+        assert nc.publish_event_sync(_event()) is False
+    finally:
+        target.shutdown()
+        redirector.shutdown()
+    assert hits == []

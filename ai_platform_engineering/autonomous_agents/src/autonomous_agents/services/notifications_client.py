@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,15 @@ RETRY_DELAY_SECONDS = 0.5
 MAX_RECIPIENTS = 50
 MAX_TITLE = 200
 MAX_SUMMARY = 500
+# Publishing uses a small dedicated pool so a hung UI server can never occupy
+# workers of the default asyncio executor. Events beyond the pending bound are
+# dropped (notifications are optional) rather than queued without limit.
+PUBLISH_WORKERS = 2
+MAX_PENDING_PUBLISHES = 16
+
+_executor = ThreadPoolExecutor(max_workers=PUBLISH_WORKERS, thread_name_prefix="notif-publish")
+_pending = 0
+_pending_lock = threading.Lock()
 
 # Strong references so fire-and-forget tasks are not garbage collected mid-flight.
 _background_tasks: "set[asyncio.Task[bool]]" = set()
@@ -85,6 +95,16 @@ def build_event(
     return event
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so the POST is never replayed as a GET and the token is never forwarded."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+
 def _post(url: str, token: str, body: bytes) -> int:
     request = urllib.request.Request(
         url,
@@ -93,7 +113,7 @@ def _post(url: str, token: str, body: bytes) -> int:
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - URL comes from operator config
+        with _opener.open(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - URL comes from operator config
             return int(response.status)
     except urllib.error.HTTPError as error:
         return int(error.code)
@@ -131,32 +151,73 @@ def publish_event_sync(event: Dict[str, Any]) -> bool:
     return False
 
 
+def _submit(event: Dict[str, Any]) -> "Optional[Future[bool]]":
+    """Queue a publish on the dedicated pool, or drop it with a warning when too many are pending."""
+    global _pending
+    with _pending_lock:
+        if _pending >= MAX_PENDING_PUBLISHES:
+            full = True
+        else:
+            full = False
+            _pending += 1
+    if full:
+        logger.warning("notification dropped (publisher busy) type=%s attempt_id=%s", event.get("type"), event.get("attempt_id"))
+        return None
+
+    def run() -> bool:
+        global _pending
+        try:
+            return publish_event_sync(event)
+        finally:
+            with _pending_lock:
+                _pending -= 1
+
+    try:
+        return _executor.submit(run)
+    except RuntimeError as error:  # executor shut down
+        with _pending_lock:
+            _pending -= 1
+        logger.warning("notification schedule error type=%s error=%s", event.get("type"), error)
+        return None
+
+
+async def _await_future(future: "Future[bool]") -> bool:
+    try:
+        return await asyncio.wrap_future(future)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("notification publish error error=%s", error)
+        return False
+
+
 async def publish_event(event: Dict[str, Any]) -> bool:
-    """Async wrapper; runs the blocking POST in a worker thread. Never raises."""
+    """Async wrapper; runs the blocking POST on the dedicated pool. Never raises; False if dropped."""
     if not events_enabled():
         return False
-    try:
-        return await asyncio.to_thread(publish_event_sync, event)
-    except Exception as error:  # noqa: BLE001
-        logger.warning("notification publish error type=%s attempt_id=%s error=%s", event.get("type"), event.get("attempt_id"), error)
+    future = _submit(event)
+    if future is None:
         return False
+    return await _await_future(future)
 
 
 def schedule_publish(event: Dict[str, Any]) -> "Optional[asyncio.Task[bool]]":
     """Publish in the background without awaiting. Safe to call from sync or async code.
 
-    Inside a running event loop this creates a tracked task; otherwise the
-    blocking publish runs on a daemon thread. Never raises.
+    Inside a running event loop this returns a tracked task; otherwise the
+    publish runs on the dedicated pool and None is returned. Returns None and
+    logs a warning when the event is dropped because too many are pending.
+    Never raises.
     """
     if not events_enabled():
+        return None
+    future = _submit(event)
+    if future is None:
         return None
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        threading.Thread(target=publish_event_sync, args=(event,), daemon=True).start()
         return None
     try:
-        task = loop.create_task(publish_event(event))
+        task = loop.create_task(_await_future(future))
     except Exception as error:  # noqa: BLE001
         logger.warning("notification schedule error type=%s error=%s", event.get("type"), error)
         return None
