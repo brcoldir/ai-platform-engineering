@@ -1,7 +1,5 @@
-import {
-  isNotificationEventType,
-  type NotificationEventType,
-} from "@/lib/notifications/taxonomy";
+import { isNotificationEventType } from "@/lib/notifications/registry";
+import type { NotificationEventType } from "@/lib/notifications/taxonomy";
 
 export const NOTIFICATION_ENVELOPE_VERSION = 1;
 

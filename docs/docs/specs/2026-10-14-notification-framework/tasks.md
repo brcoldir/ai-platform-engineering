@@ -6,7 +6,8 @@ Paths come from repo discovery. Re-verify each path before editing.
 ## Status
 
 - [x] Spec folder (`spec.md`)
-- [x] Event catalog (`ui/src/lib/notifications/taxonomy.ts`)
+- [x] Event catalog (`ui/src/lib/notifications/taxonomy.ts`), now the built-in seed of the registry
+- [x] Event registry for installed apps (`registry.ts`, `registry.server.ts`, collection `notification_catalogs`)
 - [x] Envelope validation (`ui/src/lib/notifications/envelope.ts`)
 - [x] Preference resolution and patch validation (`ui/src/lib/notifications/preferences.ts`)
 - [x] Direct publish path with dedupe and kill switch (`ui/src/lib/notifications/consumer.server.ts`)

@@ -1,6 +1,6 @@
 // POST /api/settings/notification-preferences/test
 //
-// Sends the signed-in user one sample notification for a catalog event type.
+// Sends the signed-in user one sample notification for a registered event type.
 // It goes through the same publish path as real events, so it honors the
 // user's own preferences and shows what they would actually receive. It only
 // ever notifies the caller: there is no recipient field.
@@ -9,7 +9,8 @@ import { randomUUID } from "node:crypto";
 
 import { ApiError, getAuthFromBearerOrSession, successResponse, withErrorHandler } from "@/lib/api-middleware";
 import { publishNotificationEvent } from "@/lib/notifications/consumer.server";
-import { isNotificationEventType, NOTIFICATION_EVENT_CATALOG } from "@/lib/notifications/taxonomy";
+import { getEventEntry } from "@/lib/notifications/registry";
+import { ensureNotificationCatalogsLoaded } from "@/lib/notifications/registry.server";
 import { NextRequest } from "next/server";
 
 const MAX_TESTS_PER_MINUTE = 10;
@@ -42,8 +43,10 @@ export const POST = withErrorHandler(async (request: NextRequest) => {
   } catch {
     throw new ApiError("Request body must be JSON", 400, "INVALID_JSON");
   }
+  await ensureNotificationCatalogsLoaded();
   const type = (body as { type?: unknown } | null)?.type;
-  if (!isNotificationEventType(type)) {
+  const definition = getEventEntry(type);
+  if (typeof type !== "string" || !definition) {
     throw new ApiError("type must be a known notification event type", 400, "INVALID_EVENT_TYPE");
   }
 
@@ -51,7 +54,6 @@ export const POST = withErrorHandler(async (request: NextRequest) => {
     throw new ApiError("Too many test notifications. Try again in a minute.", 429, "RATE_LIMITED");
   }
 
-  const definition = NOTIFICATION_EVENT_CATALOG[type];
   const outcome = await publishNotificationEvent({
     id: `test:${type}:${randomUUID()}`,
     type,

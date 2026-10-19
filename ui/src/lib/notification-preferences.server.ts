@@ -3,7 +3,7 @@ import {
   isNotificationEnabled,
   type NotificationPreferences,
 } from "@/lib/notifications/preferences";
-import type { NotificationEventType } from "@/lib/notifications/taxonomy";
+import { BUILTIN_SHARED_INBOX_EVENT_TYPES, type NotificationEventType } from "@/lib/notifications/taxonomy";
 import type { UserSettings } from "@/types/mongodb";
 
 /**
@@ -11,10 +11,7 @@ import type { UserSettings } from "@/types/mongodb";
  * than once per person. They cannot be skipped when written, so each viewer's
  * preferences filter them when the inbox is read.
  */
-export const SHARED_INBOX_EVENT_TYPES: NotificationEventType[] = [
-  "service.degraded",
-  "service.recovered",
-];
+export const SHARED_INBOX_EVENT_TYPES: NotificationEventType[] = [...BUILTIN_SHARED_INBOX_EVENT_TYPES];
 
 export async function platformHealthNotificationsEnabled(
   userEmail: string,
