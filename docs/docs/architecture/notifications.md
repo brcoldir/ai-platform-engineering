@@ -119,6 +119,11 @@ Known limit: a process that stops between finishing a job and sending its event 
 ## Security
 
 - The internal endpoint needs `NOTIFICATIONS_INTERNAL_TOKEN` as a bearer token and answers `503` without one. Tokens are compared in constant time.
+- The credential is verified into a **publisher identity** (`ui/src/lib/notifications/publisher*.ts`). The identity, not the request body, decides what a caller may do.
+  - `401`: missing or wrong credential. `503`: no credential configured. `403`: authenticated, but not permitted.
+  - A publisher is limited to listed event namespaces, may or may not notify org admins, and has a recipient cap.
+- Today the shared token maps to one **first-party** publisher with full authority. Treat the token holder as fully trusted, and keep external apps outside it.
+- Per-app credentials are not built. They would be verified in `authenticatePublisher` and return an `app` identity, so the route and the permission checks do not change. Issuing them belongs to the app install flow.
 - Recipients are resolved from the UI server's own user records. Both the subject and the email are taken from that one record, never from the request.
 - A request that names a subject and an email belonging to different users is rejected for that recipient. A complete pair with no matching user record is skipped. The response counts both as `rejected` and `skipped`.
 - Notification text is generic. Prompts, step errors, documents, and tool output are never included.
