@@ -7,39 +7,27 @@
 // resolves each person's identifiers from its own user records and publishes one
 // event per recipient through the same path that in-process producers use.
 //
-// Trust model: the token authenticates the calling service. Each recipient's
-// preferences are still applied before anything is written.
+// Trust model: the credential is verified into a publisher identity, and the
+// identity decides which event namespaces and audiences the request may use.
+// Today the shared token maps to one first-party publisher with full authority.
+// Each recipient's preferences are still applied before anything is written.
 
-import { timingSafeEqual } from "crypto";
-
+import { authorizePublish } from "@/lib/notifications/publisher";
+import { authenticatePublisher } from "@/lib/notifications/publisher.server";
 import { publishNotificationRequest } from "@/lib/notifications/fanout.server";
 import { parseNotificationEventRequest } from "@/lib/notifications/request";
+import { parseWithFreshCatalogs } from "@/lib/notifications/registry.server";
 import { NextRequest } from "next/server";
 
-function tokenMatches(actual: string, expected: string): boolean {
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
-  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
-}
-
-function authorize(request: NextRequest): Response | null {
-  const expected = process.env.NOTIFICATIONS_INTERNAL_TOKEN?.trim();
-  if (!expected) {
+export async function POST(request: NextRequest): Promise<Response> {
+  const authentication = authenticatePublisher(request.headers.get("authorization"));
+  if (authentication.status === "unconfigured") {
     return Response.json({ error: "Notification internal token is not configured" }, { status: 503 });
   }
-
-  const authorization = request.headers.get("authorization") ?? "";
-  const actual = authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
-  if (!actual || !tokenMatches(actual, expected)) {
+  if (authentication.status === "unauthorized") {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
-
-  return null;
-}
-
-export async function POST(request: NextRequest): Promise<Response> {
-  const denied = authorize(request);
-  if (denied) return denied;
+  const { publisher } = authentication;
 
   let body: unknown;
   try {
@@ -48,9 +36,17 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: "Request body must be JSON" }, { status: 400 });
   }
 
-  const parsed = parseNotificationEventRequest(body);
+  const parsed = await parseWithFreshCatalogs(() => parseNotificationEventRequest(body));
   if (parsed.ok === false) {
     return Response.json({ error: parsed.error }, { status: 400 });
+  }
+
+  const decision = authorizePublish(publisher, parsed.request);
+  if (decision.allowed === false) {
+    console.warn(
+      `[notifications] publisher ${publisher.id} denied for ${String(parsed.request.base.type)}: ${decision.reason}`,
+    );
+    return Response.json({ error: decision.reason }, { status: 403 });
   }
 
   const outcome = await publishNotificationRequest(parsed.request);

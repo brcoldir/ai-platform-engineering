@@ -9,7 +9,8 @@ import {
   isNotificationEnabled,
   type NotificationPreferences,
 } from "@/lib/notifications/preferences";
-import { NOTIFICATION_EVENT_CATALOG } from "@/lib/notifications/taxonomy";
+import { getEventEntry } from "@/lib/notifications/registry";
+import { parseWithFreshCatalogs } from "@/lib/notifications/registry.server";
 import {
   closeNotificationConnection,
   ensureNotificationStream,
@@ -48,7 +49,7 @@ export async function publishNotificationEvent(
     return "disabled";
   }
 
-  const parsed = parseNotificationEnvelope(input);
+  const parsed = await parseWithFreshCatalogs(() => parseNotificationEnvelope(input));
   if (parsed.ok === false) {
     console.warn("[notifications] dropped invalid event:", parsed.error);
     return "invalid";
@@ -93,12 +94,15 @@ async function publishToJetStream(
 export async function storeNotificationEnvelope(
   envelope: NotificationEnvelope,
 ): Promise<NotificationPublishOutcome> {
+  // An app can be removed between validation and storage.
+  const definition = getEventEntry(envelope.type);
+  if (!definition) return "invalid";
+
   const preferences = await loadNotificationPreferences(envelope.recipient_email);
   if (!isNotificationEnabled(envelope.type, preferences)) {
     return "disabled";
   }
 
-  const definition = NOTIFICATION_EVENT_CATALOG[envelope.type];
   await createInAppNotification({
     eventKey: notificationEventKey(envelope, envelope.recipient_subject),
     recipientUserSubjects: [envelope.recipient_subject],
@@ -160,7 +164,7 @@ async function runConsumer(): Promise<void> {
   }
 }
 
-async function handleJetStreamMessage(message: JsMsg): Promise<void> {
+export async function handleJetStreamMessage(message: JsMsg): Promise<void> {
   let input: unknown;
   try {
     input = JSON.parse(new TextDecoder().decode(message.data));
@@ -170,7 +174,7 @@ async function handleJetStreamMessage(message: JsMsg): Promise<void> {
     return;
   }
 
-  const parsed = parseNotificationEnvelope(input);
+  const parsed = await parseWithFreshCatalogs(() => parseNotificationEnvelope(input));
   if (parsed.ok === false) {
     console.warn("[notifications] dropped invalid message:", parsed.error);
     message.term();

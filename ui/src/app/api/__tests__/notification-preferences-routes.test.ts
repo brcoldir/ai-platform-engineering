@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 
 import { GET, PATCH } from "@/app/api/settings/notification-preferences/route";
 import { POST as sendTest } from "@/app/api/settings/notification-preferences/test/route";
+import { registerNotificationAppCatalog, resetNotificationRegistry } from "@/lib/notifications/registry";
 import { createFakeUserSettings } from "@/lib/notifications/testing/fake-user-settings";
 
 const fake = createFakeUserSettings();
@@ -211,5 +212,54 @@ describe("POST /api/settings/notification-preferences/test", () => {
     for (let i = 0; i < 10; i += 1) await sendTest(req("POST", { type: "workflow.completed" }, "test"));
     currentUser = { email: "quiet@example.com", sub: "sub-quiet" };
     expect((await sendTest(req("POST", { type: "workflow.completed" }, "test"))).status).toBe(200);
+  });
+});
+
+describe("app categories in the preferences API", () => {
+  const appCatalog = {
+    app_id: "example-app",
+    version: "1.0.0",
+    category: { label: "Example App", description: "Updates from Example App." },
+    events: [{ type: "example-app.sync_failed", label: "Sync failed", description: "A sync failed.", default_enabled: true, severity: "error" }],
+  };
+
+  beforeEach(() => {
+    registerNotificationAppCatalog(appCatalog);
+  });
+
+  afterEach(() => {
+    resetNotificationRegistry();
+  });
+
+  it("returns display metadata for built-in and app events, and the app category under its own id", async () => {
+    const json = (await (await GET(req("GET"))).json()).data;
+    expect(json.categories).toEqual(["workflow", "ingestion", "agent", "platform", "example-app"]);
+    expect(json.categoryDetails.find((c: { id: string }) => c.id === "example-app")).toMatchObject({
+      label: "Example App",
+      description: "Updates from Example App.",
+    });
+    expect(json.events.find((e: { type: string }) => e.type === "workflow.failed")).toMatchObject({
+      label: "Workflow failed",
+      categoryLabel: "Workflows",
+    });
+    const appEvent = json.events.find((e: { type: string }) => e.type === "example-app.sync_failed");
+    expect(appEvent).toMatchObject({ category: "example-app", categoryLabel: "Example App", label: "Sync failed", enabled: true });
+    expect(json.events.filter((e: { category: string }) => e.category === "agent").map((e: { type: string }) => e.type)).not.toContain(
+      "example-app.sync_failed",
+    );
+  });
+
+  it("stores an app preference and rejects an unregistered app key", async () => {
+    expect((await PATCH(req("PATCH", { categories: { "example-app": false } }))).status).toBe(200);
+    const data = await view(await GET(req("GET")));
+    expect(data.events.find((e) => e.type === "example-app.sync_failed")).toMatchObject({ enabled: false, explicit: true });
+
+    expect((await PATCH(req("PATCH", { events: { "other-app.thing": true } }))).status).toBe(400);
+  });
+
+  it("lets Send test publish an app event", async () => {
+    const response = await sendTest(req("POST", { type: "example-app.sync_failed" }, "test"));
+    expect(response.status).toBe(200);
+    expect(mockPublish).toHaveBeenCalledWith(expect.objectContaining({ type: "example-app.sync_failed" }));
   });
 });

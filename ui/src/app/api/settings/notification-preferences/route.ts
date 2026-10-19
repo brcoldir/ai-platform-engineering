@@ -13,25 +13,28 @@ import {
   parseNotificationPreferencePatch,
   type NotificationPreferences,
 } from "@/lib/notifications/preferences";
-import {
-  NOTIFICATION_CATEGORIES,
-  NOTIFICATION_EVENT_CATALOG,
-  NOTIFICATION_EVENT_TYPES,
-} from "@/lib/notifications/taxonomy";
+import { getCategoryEntry, listCategoryEntries, listEventEntries } from "@/lib/notifications/registry";
+import { ensureNotificationCatalogsLoaded } from "@/lib/notifications/registry.server";
 import { updateNotificationPreferences } from "@/lib/notifications/preferences.server";
 import type { UserSettings } from "@/types/mongodb";
 import { NextRequest } from "next/server";
 
 function effectiveView(preferences: NotificationPreferences | null) {
+  const categories = listCategoryEntries();
   return {
-    categories: NOTIFICATION_CATEGORIES,
-    events: NOTIFICATION_EVENT_TYPES.map((type) => ({
-      type,
-      category: NOTIFICATION_EVENT_CATALOG[type].category,
-      enabled: isNotificationEnabled(type, preferences),
+    categories: categories.map((category) => category.id),
+    categoryDetails: categories.map(({ id, label, description, source }) => ({ id, label, description, source })),
+    events: listEventEntries().map((entry) => ({
+      type: entry.type,
+      category: entry.category,
+      label: entry.label,
+      description: entry.description,
+      categoryLabel: getCategoryEntry(entry.category)?.label ?? entry.category,
+      source: entry.source,
+      enabled: isNotificationEnabled(entry.type, preferences),
       explicit:
-        preferences?.events?.[type] !== undefined ||
-        preferences?.categories?.[NOTIFICATION_EVENT_CATALOG[type].category] !== undefined,
+        preferences?.events?.[entry.type] !== undefined ||
+        preferences?.categories?.[entry.category] !== undefined,
     })),
     preferences: preferences ?? { categories: {}, events: {} },
   };
@@ -39,6 +42,7 @@ function effectiveView(preferences: NotificationPreferences | null) {
 
 export const GET = withErrorHandler(async (request: NextRequest) => {
   return withAuth(request, async (_req, user) => {
+    await ensureNotificationCatalogsLoaded();
     const settings = await getCollection<UserSettings>("user_settings");
     const doc = await settings.findOne(
       { user_id: user.email },
@@ -57,6 +61,7 @@ export const PATCH = withErrorHandler(async (request: NextRequest) => {
       throw new ApiError("Request body must be JSON", 400, "INVALID_JSON");
     }
 
+    await ensureNotificationCatalogsLoaded();
     const parsed = parseNotificationPreferencePatch(body);
     if (parsed.ok === false) {
       throw new ApiError(parsed.error, 400, "INVALID_PREFERENCES");

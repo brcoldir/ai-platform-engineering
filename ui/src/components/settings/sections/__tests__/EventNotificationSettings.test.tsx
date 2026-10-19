@@ -225,4 +225,30 @@ describe("EventNotificationSettings", () => {
       expect(await within(row).findByRole("alert")).toHaveTextContent("Too many test notifications");
     });
   });
+
+  it("renders an app category from registry metadata, and falls back to built-in copy without it", async () => {
+    const view = {
+      categories: ["workflow", "example-app"],
+      categoryDetails: [
+        { id: "workflow", label: "Workflows", description: "Workflow runs you start or own." },
+        { id: "example-app", label: "Example App", description: "Updates from Example App." },
+      ],
+      events: [
+        { type: "workflow.completed", category: "workflow", enabled: true, explicit: false },
+        { type: "example-app.sync_failed", category: "example-app", label: "Sync failed", description: "A sync failed.", enabled: true, explicit: false },
+        { type: "example-app.unlabeled_thing", category: "example-app", enabled: false, explicit: false },
+      ],
+      preferences: { categories: {}, events: {} },
+    };
+    global.fetch = jest.fn(async () => jsonResponse({ success: true, data: view })) as typeof fetch;
+    render(<EventNotificationSettings />);
+
+    expect(await screen.findByRole("heading", { name: "Example App" })).toBeInTheDocument();
+    expect(screen.getByText("Updates from Example App.", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Sync failed")).toBeInTheDocument();
+    expect(screen.getByText("Example app unlabeled thing")).toBeInTheDocument();
+    expect(screen.getByText("Workflow completed")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Example App: all events" })).toBeInTheDocument();
+    expect(screen.getByTestId("event-toggle-example-app.sync_failed")).toBeInTheDocument();
+  });
 });

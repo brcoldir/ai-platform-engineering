@@ -10,7 +10,7 @@ import {
   parseNotificationPreferencePatch,
 } from "@/lib/notifications/preferences";
 import { notificationRetentionDays, publishNotificationEvent } from "@/lib/notifications/consumer.server";
-import { NOTIFICATION_EVENT_CATALOG } from "@/lib/notifications/taxonomy";
+import { getEventEntry } from "@/lib/notifications/registry";
 
 const mockGetCollection = jest.fn();
 const mockCreateInAppNotification = jest.fn();
@@ -210,7 +210,7 @@ describe("publishNotificationEvent", () => {
       title: "Workflow finished",
       message: "Daily report completed.",
       href: "/workflows/run-1",
-      severity: NOTIFICATION_EVENT_CATALOG["workflow.completed"].severity,
+      severity: getEventEntry("workflow.completed")?.severity,
       category: "general",
       sourceLabel: "workflow",
       correlationKey: "corr-1",
@@ -286,7 +286,9 @@ describe("publishNotificationEvent", () => {
     const outcome = await publishNotificationEvent({ ...validEnvelope, type: "unknown.event" });
 
     expect(outcome).toBe("invalid");
-    expect(mockGetCollection).not.toHaveBeenCalled();
+    // An unknown type may trigger one read of the app catalogs, but never of user data.
+    const touched = mockGetCollection.mock.calls.map(([name]) => name);
+    expect(touched.every((name) => name === "notification_catalogs")).toBe(true);
     expect(mockCreateInAppNotification).not.toHaveBeenCalled();
   });
 

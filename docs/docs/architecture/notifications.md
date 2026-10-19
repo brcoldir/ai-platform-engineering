@@ -34,7 +34,7 @@ flowchart LR
 
 - Producers never know about users or preferences.
 - A producer failure never reaches the job that produced the event.
-- Each recipient's preferences are checked before anything is written.
+- Each recipient's preferences are checked before an inbox entry is written. With JetStream the check runs in the consumer, after the event is queued.
 
 ## Events
 
@@ -55,7 +55,72 @@ flowchart LR
 
 Not implemented: `agent.requires_approval`, `integration.*`, and `ingestion.progress`. No lifecycle hook exists for them today.
 
-The catalog is in `ui/src/lib/notifications/taxonomy.ts`.
+These 12 events are the built-in seed of the [registry](#event-registry). The seed is in `ui/src/lib/notifications/taxonomy.ts`.
+
+## Event registry
+
+Event types and categories are entries in a registry, not a TypeScript union. Installed apps add their own without a code change.
+
+```mermaid
+flowchart LR
+  B[Built-in seed<br/>taxonomy.ts] --> R[(Registry<br/>registry.ts)]
+  M[(MongoDB<br/>notification_catalogs)] -->|loader, 30 s cache| R
+  R --> V[Envelope, preferences,<br/>consumer, settings API]
+  V --> U[Settings and page toggles]
+```
+
+Each entry has:
+
+| Field | Meaning |
+|---|---|
+| `type` | `<namespace>.<name>` |
+| `category` | Category id |
+| `label`, `description` | Copy for the settings UI |
+| `defaultEnabled` | Applies when the user set nothing |
+| `severity` | `info`, `success`, `warning`, or `error` |
+| `schemaVersion` | Version of the event's `data` payload. Informational, not enforced |
+| `source` | `builtin`, or the app id |
+
+Rules for an app catalog:
+
+- The namespace is the app id, a lowercase slug. Every event type is `<app id>.<name>`, with `name` in `[a-z0-9_]`.
+- `ingestion`, `workflow`, `agent`, `service`, and `platform` are reserved. A catalog that uses one is rejected.
+- Each app gets one category. Its id is the app id and its label comes from the catalog. App events never appear under a built-in category.
+- Registering an app again replaces all of its entries at once. This is how a version bump works.
+- A catalog that fails validation changes nothing. The app keeps its previous entries.
+- An event type the registry does not know is rejected at publish, in preference updates, and in Send test.
+
+### Catalog document
+
+One document per app in the `notification_catalogs` collection. Nothing writes it yet, so insert it directly. A unique index on `app_id` is recommended.
+
+```json
+{
+  "app_id": "example-app",
+  "version": "1.0.0",
+  "category": { "label": "Example App", "description": "Updates from Example App." },
+  "events": [
+    {
+      "type": "example-app.sync_failed",
+      "label": "Sync failed",
+      "description": "A sync failed.",
+      "default_enabled": true,
+      "severity": "error",
+      "schema_version": 1
+    }
+  ]
+}
+```
+
+- The UI server reads the collection at most every 30 seconds per process (`ensureNotificationCatalogsLoaded`). `refreshNotificationCatalogs()` forces a read.
+- A removed document unregisters its app. An invalid document is skipped and logged.
+- If MongoDB cannot be read, the registry keeps what it has.
+- A new or changed catalog reaches each replica within about 30 seconds.
+- Apps cannot use the shared-inbox path. It is reserved for platform health events.
+
+- Each server process keeps its own copy of the registry and refreshes it from the database every 30 seconds.
+- An event with an unknown type forces one immediate refresh before it is rejected, so an app installed seconds ago works without a restart. Forced refreshes are limited to one per 5 seconds, so unknown types cannot turn into database load.
+- Without that refresh a producer would get a permanent `400` and the JetStream consumer would discard the message.
 
 ## Who is notified
 
@@ -81,6 +146,8 @@ The catalog is in `ui/src/lib/notifications/taxonomy.ts`.
 - Preference edits are guarded by a revision number. Two tabs or replicas editing at once both keep their changes. If the document keeps changing, the API answers `409` and the client should reload and retry.
 - Service events are stored once for all admins, so they are filtered when the inbox is read.
 
+The settings page and the page toggles read labels, descriptions, and categories from the preferences API, which reads the registry. App categories appear automatically.
+
 Manage them in **Settings → Notifications**, or from the toggle on the workflows, ingestion, and agent pages. Both write the same stored preference.
 
 ## Transports
@@ -102,6 +169,9 @@ Manage them in **Settings → Notifications**, or from the toggle on the workflo
 - Inbox key: `type : resource type : resource id : attempt id : recipient`.
 - A retried workflow or job has a new attempt ID, so it creates a new notification. A redelivery of the same attempt does not.
 - A unique index on `event_key` makes this safe across replicas.
+- The event `id` is not part of the inbox key. It only feeds the JetStream duplicate id (`id:attempt_id:recipient subject`).
+- A redelivered attempt in direct mode is reported as `delivered`, with no second entry.
+- Contract: [notification-ingress.openapi.yaml](../ui/notification-ingress.openapi.yaml).
 
 ## Failure behavior
 
@@ -111,7 +181,8 @@ Manage them in **Settings → Notifications**, or from the toggle on the workflo
 | NATS down while publishing | Publish reports `failed` and the job is unaffected. |
 | Consumer crashes mid-write | The message is redelivered. The key prevents a duplicate. |
 | Preference changed while an event is in flight | The latest preference wins, checked when the event is written. |
-| Recipient cannot be resolved to a subject and email | Skipped and counted. |
+| Recipient matches no user record | Skipped and counted in `skipped`. |
+| Subject and email name different users, or only one of the two matches a user | Rejected and counted in `rejected`. |
 | OpenFGA unavailable | Explicit recipients still receive. Org admins are skipped. |
 
 Known limit: a process that stops between finishing a job and sending its event can lose that event. An outbox would close this gap and is not built.
@@ -119,8 +190,13 @@ Known limit: a process that stops between finishing a job and sending its event 
 ## Security
 
 - The internal endpoint needs `NOTIFICATIONS_INTERNAL_TOKEN` as a bearer token and answers `503` without one. Tokens are compared in constant time.
+- The credential is verified into a **publisher identity** (`ui/src/lib/notifications/publisher*.ts`). The identity, not the request body, decides what a caller may do.
+  - `401`: missing or wrong credential. `503`: no credential configured. `403`: authenticated, but not permitted.
+  - A publisher is limited to listed event namespaces, may or may not notify org admins, and has a recipient cap.
+- Today the shared token maps to one **first-party** publisher with full authority. Treat the token holder as fully trusted, and keep external apps outside it.
+- Per-app credentials are not built. They would be verified in `authenticatePublisher` and return an `app` identity, so the route and the permission checks do not change. Issuing them belongs to the app install flow.
 - Recipients are resolved from the UI server's own user records. Both the subject and the email are taken from that one record, never from the request.
-- A request that names a subject and an email belonging to different users is rejected for that recipient. A complete pair with no matching user record is skipped. The response counts both as `rejected` and `skipped`.
+- A request that names a subject and an email belonging to different users is rejected for that recipient. A pair where only one half matches a user is also rejected. A reference that matches no user is skipped. The response reports the two counts separately as `rejected` and `skipped`.
 - Notification text is generic. Prompts, step errors, documents, and tool output are never included.
 - Links must be relative paths. External URLs are rejected.
 - "Send test" only ever notifies the caller, and is limited to 10 per minute.
@@ -147,9 +223,10 @@ Known limit: a process that stops between finishing a job and sending its event 
 
 ## Publishing a new event
 
-- Add the type to `taxonomy.ts` with its category, default, and severity.
+- Built-in event: add it to the seed in `taxonomy.ts` with its category, copy, default, and severity.
+- App event: add it to the app's catalog document. No code change.
 - From the UI server, call `publishNotificationRequest` with the event and its recipients.
-- From another service, POST the envelope to `/api/internal/notifications/events`. See the [API reference](../ui/api-reference.md#internal-service-routes).
+- From another service, POST the event request (envelope plus `recipients` and/or `include_org_admins`) to `/api/internal/notifications/events`. See the [API reference](../ui/api-reference.md#internal-service-routes).
 - Only add an event that actually fires. Keep the summary free of prompts, errors, and document content.
 
 ## Local testing

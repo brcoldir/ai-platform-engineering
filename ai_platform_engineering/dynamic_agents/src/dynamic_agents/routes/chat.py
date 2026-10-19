@@ -1,6 +1,7 @@
 """Chat endpoint for Dynamic Agents with SSE streaming."""
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -462,8 +463,8 @@ async def _generate_sse_events(
         notify(failed=False)
 
     except RuntimeCapacityError as e:
+        # Transient and retryable, not a failed run: do not notify (a retry loop would spam).
         logger.warning(f"Agent runtime at capacity: {e}")
-        notify(failed=True)
         for frame in encoder.on_run_error("This agent is at capacity right now. Please try again in a moment."):
             yield frame
     except RuntimeInitError as e:
@@ -577,6 +578,16 @@ async def chat_start_stream(
     )
 
 
+def _resume_turn_id(trace_id: str | None, resume_data: str) -> str:
+    """Stable per-resume id: the same resume (trace + payload) retried yields the same attempt id.
+
+    The resume request has no turn id, so derive one from the request's trace id
+    (when given) and a short digest of the resume payload.
+    """
+    digest = hashlib.sha256(resume_data.encode("utf-8", "replace")).hexdigest()[:16]
+    return f"resume:{trace_id or 'none'}:{digest}"
+
+
 async def _generate_resume_sse_events(
     agent_config: DynamicAgentConfig,
     mcp_servers: list,
@@ -605,7 +616,7 @@ async def _generate_resume_sse_events(
             agent_config=agent_config,
             user=user,
             session_id=session_id,
-            turn_id=None,
+            turn_id=_resume_turn_id(trace_id, resume_data),
             started_at=started_at,
             failed=failed,
             suppress=suppress_notifications,
@@ -631,8 +642,8 @@ async def _generate_resume_sse_events(
         notify(failed=False)
 
     except RuntimeCapacityError as e:
+        # Transient and retryable, not a failed run: do not notify (a retry loop would spam).
         logger.warning(f"Agent runtime at capacity: {e}")
-        notify(failed=True)
         for frame in encoder.on_run_error("This agent is at capacity right now. Please try again in a moment."):
             yield frame
     except Exception:

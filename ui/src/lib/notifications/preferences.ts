@@ -1,10 +1,5 @@
-import {
-  NOTIFICATION_CATEGORIES,
-  NOTIFICATION_EVENT_CATALOG,
-  NOTIFICATION_EVENT_TYPES,
-  type NotificationCategory,
-  type NotificationEventType,
-} from "@/lib/notifications/taxonomy";
+import { getEventEntry, listCategoryEntries, listEventEntries } from "@/lib/notifications/registry";
+import type { NotificationCategory, NotificationEventType } from "@/lib/notifications/taxonomy";
 
 /** Sparse explicit choices. A missing key means "fall back to the next level". */
 export interface NotificationPreferences {
@@ -14,21 +9,23 @@ export interface NotificationPreferences {
 
 /**
  * Effective setting for one event type: explicit event, then explicit
- * category, then the catalog default. Repeated writes of the same preferences
- * always resolve the same way.
+ * category, then the registry default. Repeated writes of the same preferences
+ * always resolve the same way. A type the registry does not know is never enabled.
  */
 export function isNotificationEnabled(
   type: NotificationEventType,
   preferences: NotificationPreferences | null | undefined,
 ): boolean {
+  const entry = getEventEntry(type);
+  if (!entry) return false;
+
   const explicitEvent = preferences?.events?.[type];
   if (typeof explicitEvent === "boolean") return explicitEvent;
 
-  const category = NOTIFICATION_EVENT_CATALOG[type].category;
-  const explicitCategory = preferences?.categories?.[category];
+  const explicitCategory = preferences?.categories?.[entry.category];
   if (typeof explicitCategory === "boolean") return explicitCategory;
 
-  return NOTIFICATION_EVENT_CATALOG[type].defaultEnabled;
+  return entry.defaultEnabled;
 }
 
 /** A patch value of `null` removes the explicit override and returns to the default. */
@@ -71,7 +68,7 @@ export type PreferencePatchResult =
 /**
  * Validates a client-supplied preference update. Only known categories and
  * event types are accepted, and every value must be a boolean. Anything else is
- * rejected so the stored document can only hold catalog keys.
+ * rejected so the stored document can only hold registered keys.
  */
 export function parseNotificationPreferencePatch(input: unknown): PreferencePatchResult {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -86,13 +83,13 @@ export function parseNotificationPreferencePatch(input: unknown): PreferencePatc
   const patch: NotificationPreferencePatch = {};
 
   if (raw.categories !== undefined) {
-    const section = parseBooleanMap(raw.categories, NOTIFICATION_CATEGORIES);
+    const section = parseBooleanMap(raw.categories, listCategoryEntries().map((entry) => entry.id));
     if (section.ok === false) return { ok: false, error: `categories: ${section.error}` };
     patch.categories = section.value as Partial<Record<NotificationCategory, boolean | null>>;
   }
 
   if (raw.events !== undefined) {
-    const section = parseBooleanMap(raw.events, NOTIFICATION_EVENT_TYPES);
+    const section = parseBooleanMap(raw.events, listEventEntries().map((entry) => entry.type));
     if (section.ok === false) return { ok: false, error: `events: ${section.error}` };
     patch.events = section.value as Partial<Record<NotificationEventType, boolean | null>>;
   }

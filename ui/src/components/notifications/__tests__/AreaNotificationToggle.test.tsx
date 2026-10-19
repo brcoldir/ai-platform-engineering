@@ -137,4 +137,35 @@ describe("AreaNotificationToggle", () => {
 
     expect(await screen.findByText("Unexpected response")).toBeInTheDocument();
   });
+
+  it("toggles every event of an app category, with the label from the registry", async () => {
+    const data = {
+      categoryDetails: [{ id: "example-app", label: "Example App", description: "Updates from Example App." }],
+      events: [
+        { type: "example-app.sync_failed", category: "example-app", enabled: true },
+        { type: "example-app.digest", category: "example-app", enabled: true },
+        { type: "workflow.completed", category: "workflow", enabled: false },
+      ],
+    };
+    const fetchMock = jest.fn(async (_url: unknown, init?: RequestInit) =>
+      jsonResponse({ success: true, data: init?.method === "PATCH" ? { ...data, events: data.events.map((e) => ({ ...e, enabled: false })) } : data }),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    render(<AreaNotificationToggle area="example-app" />);
+
+    const toggle = await screen.findByRole("switch", { name: "Notify me about example app" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(patches(fetchMock as unknown as jest.Mock)).toHaveLength(1));
+    expect(patches(fetchMock as unknown as jest.Mock)[0]).toEqual({
+      events: { "example-app.sync_failed": false, "example-app.digest": false },
+    });
+  });
+
+  it("renders nothing for a category with no events", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ success: true, data: ALL_WORKFLOW_ON })) as typeof fetch;
+    const { container } = render(<AreaNotificationToggle area="removed-app" />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
 });

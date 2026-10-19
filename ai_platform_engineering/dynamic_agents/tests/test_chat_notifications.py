@@ -34,6 +34,11 @@ class _Runtime:
             raise self._fail
         yield "frame-2"
 
+    async def resume(self, *args: Any, **kwargs: Any):
+        yield "resumed"
+        if self._fail:
+            raise self._fail
+
     async def has_pending_interrupt(self, session_id: str) -> dict | None:
         return self._interrupt
 
@@ -127,7 +132,6 @@ async def test_cancelled_or_interrupted_run_does_not_emit(monkeypatch: pytest.Mo
 @pytest.mark.parametrize(
     "cache",
     [
-        _Cache(raises=runtime_cache.RuntimeCapacityError("full")),
         _Cache(raises=runtime_cache.RuntimeInitError("agent-1", RuntimeError("bad"))),
         _Cache(raises=RuntimeError("boom token=abc123")),
         _Cache(runtime=_Runtime(fail=RuntimeError("mid-stream abc123"))),
@@ -190,3 +194,36 @@ async def test_kill_switch_and_missing_token_send_nothing(monkeypatch: pytest.Mo
     await _run(monkeypatch, _Cache(raises=RuntimeError("x")))
     assert calls == []
     assert chat._chat_min_seconds() == 30.0
+
+
+async def test_capacity_error_does_not_notify(monkeypatch: pytest.MonkeyPatch, published: list[dict]) -> None:
+    _clock(monkeypatch, 1.0)
+    frames = await _run(monkeypatch, _Cache(raises=runtime_cache.RuntimeCapacityError("full")))
+    assert frames[-1].startswith("error:")
+    assert published == []
+
+
+async def _resume(monkeypatch: pytest.MonkeyPatch, cache: _Cache, *, trace_id: str | None, resume_data: str = "{}") -> list[str]:
+    monkeypatch.setattr(chat, "get_runtime_cache", lambda: cache)
+    frames = [
+        frame
+        async for frame in chat._generate_resume_sse_events(AGENT, [], "conv-1", USER, resume_data, _Encoder(), trace_id=trace_id)
+    ]
+    await asyncio.gather(*list(chat._notification_tasks))
+    return frames
+
+
+async def test_resume_capacity_error_does_not_notify(monkeypatch: pytest.MonkeyPatch, published: list[dict]) -> None:
+    _clock(monkeypatch, 1.0)
+    await _resume(monkeypatch, _Cache(raises=runtime_cache.RuntimeCapacityError("full")), trace_id="t1")
+    assert published == []
+
+
+@pytest.mark.parametrize("trace_id", ["trace-1", None])
+async def test_resume_failure_attempt_id_is_stable_across_retries(monkeypatch: pytest.MonkeyPatch, published: list[dict], trace_id: str | None) -> None:
+    for _ in range(2):
+        _clock(monkeypatch, 1.0)
+        await _resume(monkeypatch, _Cache(raises=RuntimeError("boom")), trace_id=trace_id, resume_data='{"type": "form_input"}')
+    assert len(published) == 2
+    assert published[0]["attempt_id"] == published[1]["attempt_id"]
+    assert published[0]["attempt_id"].startswith("conv-1:")

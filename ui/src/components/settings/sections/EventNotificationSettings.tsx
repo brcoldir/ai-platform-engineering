@@ -3,34 +3,32 @@
 import { SettingsCard } from "@/components/settings/shared/SettingsCard";
 import { SettingsSwitch } from "@/components/settings/shared/SettingsSwitch";
 import { Button } from "@/components/ui/button";
+import { fallbackCategoryCopy, fallbackEventCopy } from "@/lib/notifications/display";
 import { cn } from "@/lib/utils";
 import { Loader2, RotateCcw, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type CategoryId = "ingestion" | "workflow" | "agent" | "platform";
-type EventType =
-  | "ingestion.completed"
-  | "ingestion.failed"
-  | "ingestion.started"
-  | "workflow.completed"
-  | "workflow.failed"
-  | "workflow.requires_input"
-  | "workflow.started"
-  | "agent.completed"
-  | "agent.failed"
-  | "agent.started"
-  | "service.degraded"
-  | "service.recovered";
+type CategoryId = string;
+type EventType = string;
 
 interface EventRow {
   type: EventType;
   category: CategoryId;
+  label?: string;
+  description?: string;
   enabled: boolean;
   explicit: boolean;
 }
 
+interface CategoryDetail {
+  id: CategoryId;
+  label?: string;
+  description?: string;
+}
+
 interface EffectiveView {
   categories: CategoryId[];
+  categoryDetails?: CategoryDetail[];
   events: EventRow[];
   preferences: {
     categories?: Partial<Record<CategoryId, boolean>>;
@@ -43,47 +41,10 @@ interface Patch {
   events?: Partial<Record<EventType, boolean | null>>;
 }
 
-// Display copy lives here so the server catalog stays free of UI wording.
-const CATEGORY_COPY: Record<CategoryId, { title: string; description: string }> = {
-  ingestion: {
-    title: "Knowledge ingestion",
-    description: "Sources you add to a knowledge base.",
-  },
-  workflow: {
-    title: "Workflows",
-    description: "Workflow runs you start or own.",
-  },
-  agent: {
-    title: "Agent tasks",
-    description: "Scheduled and background agent tasks you own.",
-  },
-  platform: {
-    title: "Platform",
-    description: "Service health changes that affect the platform.",
-  },
-};
-
-const EVENT_COPY: Record<EventType, { label: string; description: string }> = {
-  "ingestion.completed": { label: "Ingestion finished", description: "A source finished indexing." },
-  "ingestion.failed": { label: "Ingestion failed", description: "A source could not be indexed." },
-  "ingestion.started": { label: "Ingestion started", description: "A source began indexing." },
-  "workflow.completed": { label: "Workflow completed", description: "A workflow run finished successfully." },
-  "workflow.failed": { label: "Workflow failed", description: "A workflow run stopped with an error." },
-  "workflow.requires_input": { label: "Workflow needs input", description: "A workflow is waiting for your answer." },
-  "workflow.started": { label: "Workflow started", description: "A workflow run began." },
-  "agent.completed": { label: "Agent task completed", description: "A background agent task finished." },
-  "agent.failed": { label: "Agent task failed", description: "A background agent task failed." },
-  "agent.started": { label: "Agent task started", description: "A background agent task began." },
-  "service.degraded": { label: "Service degraded", description: "A service is no longer healthy." },
-  "service.recovered": { label: "Service recovered", description: "A degraded service is healthy again." },
-};
-
 function isEffectiveView(value: unknown): value is EffectiveView {
   const candidate = value as Partial<EffectiveView> | null;
   return Boolean(candidate && Array.isArray(candidate.events) && Array.isArray(candidate.categories));
 }
-
-const CATEGORY_ORDER: CategoryId[] = ["workflow", "ingestion", "agent", "platform"];
 
 interface SaveState {
   status: "idle" | "saving" | "saved" | "error";
@@ -264,10 +225,15 @@ export function EventNotificationSettings(): React.ReactElement {
           </div>
         ) : null}
 
-        {CATEGORY_ORDER.map((category) => {
+        {view.categories.map((category) => {
           const rows = view.events.filter((row) => row.category === category);
           if (rows.length === 0) return null;
-          const copy = CATEGORY_COPY[category];
+          const detail = view.categoryDetails?.find((candidate) => candidate.id === category);
+          const fallback = fallbackCategoryCopy(category);
+          const copy = {
+            title: detail?.label || fallback.label,
+            description: detail?.description || fallback.description,
+          };
           const allOn = rows.every((row) => row.enabled);
           const categoryExplicit = view.preferences.categories?.[category] !== undefined;
           return (
@@ -295,7 +261,11 @@ export function EventNotificationSettings(): React.ReactElement {
 
               <ul className="divide-y divide-border/70 rounded-lg border border-border/70">
                 {rows.map((row) => {
-                  const event = EVENT_COPY[row.type];
+                  const fallbackEvent = fallbackEventCopy(row.type);
+                  const event = {
+                    label: row.label || fallbackEvent.label,
+                    description: row.description || fallbackEvent.description,
+                  };
                   return (
                     <li className="flex flex-wrap items-center gap-3 p-3 sm:flex-nowrap sm:gap-4 sm:p-4" key={row.type}>
                       <div className="min-w-0 flex-1">
