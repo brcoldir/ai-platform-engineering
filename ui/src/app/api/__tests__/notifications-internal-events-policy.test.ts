@@ -11,6 +11,9 @@ let authentication: PublisherAuthentication;
 jest.mock("@/lib/notifications/fanout.server", () => ({
   publishNotificationRequest: (...args: unknown[]) => mockPublish(...args),
 }));
+jest.mock("@/lib/notifications/registry.server", () => ({
+  ensureNotificationCatalogsLoaded: jest.fn().mockResolvedValue(undefined),
+}));
 jest.mock("@/lib/notifications/publisher.server", () => ({
   authenticatePublisher: () => authentication,
 }));
@@ -57,7 +60,7 @@ describe("publisher permissions on the internal events route", () => {
     expect(response.status).toBe(403);
     expect((await response.json()).error).toMatch(/may not send 'workflow' events/);
     expect(mockPublish).not.toHaveBeenCalled();
-    expect(warn.mock.calls[0][0]).toContain("app-example");
+    expect(warn.mock.calls.some(([message]) => String(message).includes("app-example"))).toBe(true);
     warn.mockRestore();
   });
 

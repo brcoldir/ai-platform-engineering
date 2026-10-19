@@ -22,7 +22,7 @@ import {
   parseNotificationEnvelope,
 } from "@/lib/notifications/envelope";
 import { MAX_REQUEST_RECIPIENTS, parseNotificationEventRequest } from "@/lib/notifications/request";
-import { NOTIFICATION_EVENT_TYPES } from "@/lib/notifications/taxonomy";
+import { BUILTIN_NOTIFICATION_EVENT_TYPES as NOTIFICATION_EVENT_TYPES } from "@/lib/notifications/taxonomy";
 
 type Schema = Record<string, any>;
 
