@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://caipe.example.com/schemas/notification-event.schema.json",
+  "title": "NotificationEventRequest",
+  "description": "Request body of POST /api/internal/notifications/events. One event plus its audience. Source of truth: ui/src/lib/notifications/request.ts and envelope.ts. Unknown fields are dropped by the server, not stored and not rejected, so additionalProperties is true. Strings are trimmed before length checks. The `type` enum is the BUILT-IN set of 12 types only; a registry for app-declared types is being added separately and is not part of this contract.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "type", "version", "occurred_at", "resource", "attempt_id", "data"],
+  "anyOf": [
+    { "required": ["recipients"], "properties": { "recipients": { "minItems": 1 } } },
+    { "required": ["include_org_admins"], "properties": { "include_org_admins": { "const": true } } },
+    { "required": ["recipient_subject"] },
+    { "required": ["recipient_email"] }
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S",
+      "description": "Producer-chosen event id. Required, non-blank after trimming. It is used in the JetStream de-duplication id, but NOT in the inbox event key (see attempt_id)."
+    },
+    "type": {
+      "enum": [
+        "ingestion.completed",
+        "ingestion.failed",
+        "ingestion.started",
+        "workflow.completed",
+        "workflow.failed",
+        "workflow.requires_input",
+        "workflow.started",
+        "agent.completed",
+        "agent.failed",
+        "agent.started",
+        "service.degraded",
+        "service.recovered"
+      ],
+      "description": "BUILT-IN event types only (ui/src/lib/notifications/taxonomy.ts). A registry for app-declared types is being added separately; its rules are not defined here."
+    },
+    "version": {
+      "const": 1,
+      "description": "Envelope schema version. Only 1 is accepted. Any other value is rejected with 400."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp. The server accepts anything Date.parse can read and stores it normalized to UTC. Send RFC 3339."
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "\\S" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" }
+      },
+      "description": "The thing the event is about. Part of the idempotency key."
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S",
+      "description": "Idempotency discriminator. Event key = type + resource.type + resource.id + attempt_id + recipient. Redelivery of the same attempt_id is ignored. A retry that should create a new notification must use a new attempt_id."
+    },
+    "correlation_id": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "Optional. A blank, non-string, or over-long value is silently omitted by the server rather than rejected."
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["status", "title", "summary"],
+      "properties": {
+        "status": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "\\S" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" },
+        "href": {
+          "type": "string",
+          "pattern": "^/(?!/)",
+          "description": "Optional same-app relative path. Must start with a single slash. Must not start with //. External URLs are rejected."
+        }
+      }
+    },
+    "recipients": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "subject": { "type": "string", "description": "Keycloak subject." },
+          "email": { "type": "string", "description": "Email address. Matched case-insensitively." }
+        },
+        "anyOf": [
+          { "required": ["subject"], "properties": { "subject": { "pattern": "\\S" } } },
+          { "required": ["email"], "properties": { "email": { "pattern": "\\S" } } }
+        ]
+      },
+      "description": "Explicit recipients, at most 50. Each needs a non-blank subject or email. Resolved against the users collection; identifiers come from that record, not the request. If both are given they must name the same user, else the recipient is rejected."
+    },
+    "include_org_admins": {
+      "type": "boolean",
+      "description": "When true, also notify direct organization admins (OpenFGA user: tuples). Admins who hold the role only through a team are not expanded."
+    },
+    "recipient_subject": {
+      "type": "string",
+      "description": "Legacy single-recipient form. Treated as one extra entry in recipients."
+    },
+    "recipient_email": {
+      "type": "string",
+      "description": "Legacy single-recipient form. Treated as one extra entry in recipients."
+    }
+  }
+}
