@@ -12,7 +12,7 @@ jest.mock("@/lib/notifications/fanout.server", () => ({
   publishNotificationRequest: (...args: unknown[]) => mockPublish(...args),
 }));
 jest.mock("@/lib/notifications/registry.server", () => ({
-  ensureNotificationCatalogsLoaded: jest.fn().mockResolvedValue(undefined),
+  parseWithFreshCatalogs: async (parse: () => unknown) => parse(),
 }));
 jest.mock("@/lib/notifications/publisher.server", () => ({
   authenticatePublisher: () => authentication,

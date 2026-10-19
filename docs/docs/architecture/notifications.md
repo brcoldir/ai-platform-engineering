@@ -118,6 +118,10 @@ One document per app in the `notification_catalogs` collection. Nothing writes i
 - A new or changed catalog reaches each replica within about 30 seconds.
 - Apps cannot use the shared-inbox path. It is reserved for platform health events.
 
+- Each server process keeps its own copy of the registry and refreshes it from the database every 30 seconds.
+- An event with an unknown type forces one immediate refresh before it is rejected, so an app installed seconds ago works without a restart. Forced refreshes are limited to one per 5 seconds, so unknown types cannot turn into database load.
+- Without that refresh a producer would get a permanent `400` and the JetStream consumer would discard the message.
+
 ## Who is notified
 
 | Source | Recipients |

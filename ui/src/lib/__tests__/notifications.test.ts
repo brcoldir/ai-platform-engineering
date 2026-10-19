@@ -286,7 +286,9 @@ describe("publishNotificationEvent", () => {
     const outcome = await publishNotificationEvent({ ...validEnvelope, type: "unknown.event" });
 
     expect(outcome).toBe("invalid");
-    expect(mockGetCollection).not.toHaveBeenCalled();
+    // An unknown type may trigger one read of the app catalogs, but never of user data.
+    const touched = mockGetCollection.mock.calls.map(([name]) => name);
+    expect(touched.every((name) => name === "notification_catalogs")).toBe(true);
     expect(mockCreateInAppNotification).not.toHaveBeenCalled();
   });
 

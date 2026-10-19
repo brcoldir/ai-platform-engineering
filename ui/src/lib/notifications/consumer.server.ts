@@ -10,7 +10,7 @@ import {
   type NotificationPreferences,
 } from "@/lib/notifications/preferences";
 import { getEventEntry } from "@/lib/notifications/registry";
-import { ensureNotificationCatalogsLoaded } from "@/lib/notifications/registry.server";
+import { parseWithFreshCatalogs } from "@/lib/notifications/registry.server";
 import {
   closeNotificationConnection,
   ensureNotificationStream,
@@ -49,8 +49,7 @@ export async function publishNotificationEvent(
     return "disabled";
   }
 
-  await ensureNotificationCatalogsLoaded();
-  const parsed = parseNotificationEnvelope(input);
+  const parsed = await parseWithFreshCatalogs(() => parseNotificationEnvelope(input));
   if (parsed.ok === false) {
     console.warn("[notifications] dropped invalid event:", parsed.error);
     return "invalid";
@@ -165,7 +164,7 @@ async function runConsumer(): Promise<void> {
   }
 }
 
-async function handleJetStreamMessage(message: JsMsg): Promise<void> {
+export async function handleJetStreamMessage(message: JsMsg): Promise<void> {
   let input: unknown;
   try {
     input = JSON.parse(new TextDecoder().decode(message.data));
@@ -175,8 +174,7 @@ async function handleJetStreamMessage(message: JsMsg): Promise<void> {
     return;
   }
 
-  await ensureNotificationCatalogsLoaded();
-  const parsed = parseNotificationEnvelope(input);
+  const parsed = await parseWithFreshCatalogs(() => parseNotificationEnvelope(input));
   if (parsed.ok === false) {
     console.warn("[notifications] dropped invalid message:", parsed.error);
     message.term();

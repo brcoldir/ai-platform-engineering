@@ -68,11 +68,36 @@ export async function ensureNotificationCatalogsLoaded(): Promise<void> {
   await refreshNotificationCatalogs();
 }
 
+/**
+ * Parses with the registry current. A catalog added in the last cache interval
+ * is unknown to a process that cached just before, so an "unknown event type"
+ * result forces one refresh and a second attempt before it is treated as final.
+ * Without this a producer would get a permanent 400, and the JetStream consumer
+ * would discard the message for good. Forced refreshes are rate limited so a
+ * stream of bogus types cannot turn into a stream of database reads.
+ */
+export const MIN_FORCED_REFRESH_MS = 5_000;
+let lastForcedRefreshAt = 0;
+
+export async function parseWithFreshCatalogs<T extends { ok: boolean }>(parse: () => T): Promise<T> {
+  await ensureNotificationCatalogsLoaded();
+  const first = parse();
+  const error = (first as { error?: unknown }).error;
+  if (first.ok || typeof error !== "string" || !error.startsWith("unknown event type")) return first;
+
+  const now = Date.now();
+  if (now - lastForcedRefreshAt < MIN_FORCED_REFRESH_MS) return first;
+  lastForcedRefreshAt = now;
+  await refreshNotificationCatalogs();
+  return parse();
+}
+
 /** Forgets the cache and the apps this loader registered. For tests. */
 export function resetNotificationCatalogLoader(): void {
   loadedApps.clear();
   loadedAt = 0;
   inFlight = null;
+  lastForcedRefreshAt = 0;
 }
 
 async function loadCatalogs(): Promise<CatalogRefreshResult> {
