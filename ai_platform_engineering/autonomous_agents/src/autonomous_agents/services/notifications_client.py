@@ -17,12 +17,13 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -35,15 +36,16 @@ RETRY_DELAY_SECONDS = 0.5
 MAX_RECIPIENTS = 50
 MAX_TITLE = 200
 MAX_SUMMARY = 500
-# Publishing uses a small dedicated pool so a hung UI server can never occupy
-# workers of the default asyncio executor. Events beyond the pending bound are
-# dropped (notifications are optional) rather than queued without limit.
+# Publishing uses 2 dedicated daemon threads fed by a bounded queue, so a hung
+# UI server can never occupy default asyncio executor workers or delay
+# interpreter exit. Events beyond the bound are dropped (notifications are
+# best effort) rather than queued without limit.
 PUBLISH_WORKERS = 2
 MAX_PENDING_PUBLISHES = 16
 
-_executor = ThreadPoolExecutor(max_workers=PUBLISH_WORKERS, thread_name_prefix="notif-publish")
-_pending = 0
-_pending_lock = threading.Lock()
+_queue: "queue.Queue[tuple[Dict[str, Any], Future[bool]]]" = queue.Queue(maxsize=MAX_PENDING_PUBLISHES)
+_workers: "List[threading.Thread]" = []
+_workers_lock = threading.Lock()
 
 # Strong references so fire-and-forget tasks are not garbage collected mid-flight.
 _background_tasks: "set[asyncio.Task[bool]]" = set()
@@ -151,34 +153,40 @@ def publish_event_sync(event: Dict[str, Any]) -> bool:
     return False
 
 
+def _worker() -> None:
+    while True:
+        event, future = _queue.get()
+        try:
+            if future.set_running_or_notify_cancel():
+                future.set_result(publish_event_sync(event))
+        except BaseException as error:  # noqa: BLE001 - a worker must survive any single event
+            if not future.done():
+                future.set_exception(error)
+
+
+def _ensure_workers() -> None:
+    """Start the daemon workers lazily and thread-safely."""
+    if _workers:
+        return
+    with _workers_lock:
+        if _workers:
+            return
+        for index in range(PUBLISH_WORKERS):
+            thread = threading.Thread(target=_worker, name=f"notif-publish-{index}", daemon=True)
+            thread.start()
+            _workers.append(thread)
+
+
 def _submit(event: Dict[str, Any]) -> "Optional[Future[bool]]":
-    """Queue a publish on the dedicated pool, or drop it with a warning when too many are pending."""
-    global _pending
-    with _pending_lock:
-        if _pending >= MAX_PENDING_PUBLISHES:
-            full = True
-        else:
-            full = False
-            _pending += 1
-    if full:
+    """Queue a publish for the daemon workers, or drop it with a warning when the queue is full."""
+    _ensure_workers()
+    future: "Future[bool]" = Future()
+    try:
+        _queue.put_nowait((event, future))
+    except queue.Full:
         logger.warning("notification dropped (publisher busy) type=%s attempt_id=%s", event.get("type"), event.get("attempt_id"))
         return None
-
-    def run() -> bool:
-        global _pending
-        try:
-            return publish_event_sync(event)
-        finally:
-            with _pending_lock:
-                _pending -= 1
-
-    try:
-        return _executor.submit(run)
-    except RuntimeError as error:  # executor shut down
-        with _pending_lock:
-            _pending -= 1
-        logger.warning("notification schedule error type=%s error=%s", event.get("type"), error)
-        return None
+    return future
 
 
 async def _await_future(future: "Future[bool]") -> bool:

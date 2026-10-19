@@ -198,7 +198,7 @@ def test_hung_server_does_not_starve_default_executor_and_excess_is_dropped(monk
         server.close()
     assert elapsed < 0.5
     assert dropped > 0
-    assert scheduled <= nc.MAX_PENDING_PUBLISHES
+    assert scheduled <= nc.MAX_PENDING_PUBLISHES + nc.PUBLISH_WORKERS
 
 
 def test_redirect_is_rejected_without_following(monkeypatch) -> None:
@@ -239,3 +239,30 @@ def test_redirect_is_rejected_without_following(monkeypatch) -> None:
         target.shutdown()
         redirector.shutdown()
     assert hits == []
+
+
+_EXIT_SCRIPT = """
+import os, socket, sys, threading
+sys.path.insert(0, os.getcwd())
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(64)
+held = []
+threading.Thread(target=lambda: [held.append(srv.accept()) for _ in range(200)], daemon=True).start()
+os.environ.update(NOTIFICATIONS_INTERNAL_URL="http://127.0.0.1:%d" % srv.getsockname()[1], NOTIFICATIONS_INTERNAL_TOKEN="t")
+os.environ.pop("NOTIFICATION_EVENTS_ENABLED", None)
+from ai_platform_engineering.utils.notifications import client as c
+for i in range(30):
+    ev = c.build_event(event_type="agent.failed", resource_type="x", resource_id="r", attempt_id="a%d" % i,
+                       status="failed", title="t", summary="s", recipients=[])
+    c._submit(ev)
+"""
+
+
+def test_hung_server_does_not_delay_interpreter_exit() -> None:
+    import subprocess
+    import sys
+    import time
+
+    root = Path(__file__).resolve().parents[3]
+    started = time.monotonic()
+    subprocess.run([sys.executable, "-c", _EXIT_SCRIPT], cwd=root, timeout=30, check=True, capture_output=True)
+    assert time.monotonic() - started < 5
