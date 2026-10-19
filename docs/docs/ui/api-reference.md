@@ -84,16 +84,17 @@ These routes are for other CAIPE services, not browsers. They are not part of th
 
 | Method | Route | Auth | Purpose |
 |---|---|---|---|
-| `POST` | `/api/internal/notifications/events` | `Authorization: Bearer $NOTIFICATIONS_INTERNAL_TOKEN` | Publish one notification event |
+| `POST` | `/api/internal/notifications/events` | `Authorization: Bearer $NOTIFICATIONS_INTERNAL_TOKEN` | Publish one event to a resolved audience |
 
 Responses:
 
 | Status | Meaning |
 |---|---|
-| `202` | Accepted. Body: `{ recipients, skipped, rejected, results: { delivered, queued, disabled, invalid, failed } }`. `skipped` counts recipients with no matching user. `rejected` counts recipients whose subject and email name different users. |
-| `400` | Envelope invalid. Nothing was published. |
+| `202` | Accepted, no delivery failed. Body: `{ recipients, skipped, rejected, results: { delivered, queued, disabled, invalid, failed } }`. `skipped` counts recipients with no matching user. `rejected` counts recipients whose subject and email do not name the same user. |
+| `400` | Body is not JSON, or the request or event is invalid. Nothing was published. |
 | `401` | Missing or wrong token |
-| `503` | Token not configured, or delivery failed. Safe to retry. |
+| `403` | Authenticated publisher not permitted (namespace, org admins, or recipient count). Cannot occur with the shared token today, which maps to a first-party publisher with full authority. Needs the publisher policy layer. |
+| `503` | Token not configured, or at least one delivery failed (`results.failed > 0`). Safe to retry. |
 
 Example:
 
@@ -108,12 +109,35 @@ curl -X POST http://caipe-ui:3000/api/internal/notifications/events \
     "occurred_at": "2026-10-14T10:00:00Z",
     "resource": { "type": "datasource", "id": "example-source" },
     "attempt_id": "job-example-1",
-    "recipient_subject": "example-subject",
-    "recipient_email": "test-user@example.com",
+    "recipients": [{ "email": "test-user@example.com" }],
+    "include_org_admins": false,
     "data": { "status": "completed", "title": "Ingestion finished", "summary": "Example source finished indexing.", "href": "/knowledge-bases" }
   }'
 ```
 
 Envelope fields are documented in `ui/src/lib/notifications/envelope.ts`. The event registry is in `ui/src/lib/notifications/registry.ts`. See [Event Notifications](../architecture/notifications.md#event-registry).
+
+### Notification ingress contract
+
+- OpenAPI 3.1: [notification-ingress.openapi.yaml](./notification-ingress.openapi.yaml)
+- JSON Schema (request body): [schemas/notification-event.schema.json](./schemas/notification-event.schema.json)
+- `ui/src/lib/__tests__/notification-contract.test.ts` fails if the schema drifts from the code.
+- The schema lists the 12 built-in event types only. Types that an app registers through the event registry are accepted at runtime but are not described by this schema.
+- Auth is one shared token, verified into a single first-party publisher identity. Per-app credentials are not implemented.
+
+### Can an external app call this?
+
+What the repo shows:
+
+- The route checks only the bearer token. Nothing in `ui/src/proxy.ts` affects it: its matcher is `/apps/:path*` only.
+- Docker Compose: `caipe-ui` publishes port `3000:3000` to the host, and other services reach it as `http://caipe-ui:3000`. The route is therefore reachable from the host and from containers on the same Compose network, if they hold the token. `NOTIFICATIONS_INTERNAL_TOKEN` defaults to empty, which makes the route answer `503`.
+- Helm: the `caipe-ui` Ingress is off by default (`ingress.enabled: false`). When enabled, the sample path is `/` with `Prefix`, which forwards `/api/internal/*` like any other path. The chart has no path exclusion and no NetworkPolicy templates.
+
+What the repo cannot tell you:
+
+- Whether your cluster's ingress controller, gateway, WAF, or network policies expose or block `/api/internal/*`. That is set outside this repo.
+- Whether `next.config` or an external gateway rewrites or filters the path. Only `proxy.ts` was checked.
+- Whether the token is set in a given deployment.
+- Treat an external app as supported only if the operator confirms reachability and issues it the token. Because the token is shared, prefer in-cluster callers until per-publisher identity exists.
 
 Route files under `ui/src/app/api` are the implementation source of truth.

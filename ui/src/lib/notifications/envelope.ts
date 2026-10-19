@@ -3,9 +3,11 @@ import type { NotificationEventType } from "@/lib/notifications/taxonomy";
 
 export const NOTIFICATION_ENVELOPE_VERSION = 1;
 
-const MAX_ID_LENGTH = 200;
-const MAX_SUMMARY_LENGTH = 500;
-const MAX_TITLE_LENGTH = 200;
+export const MAX_ID_LENGTH = 200;
+export const MAX_SUMMARY_LENGTH = 500;
+export const MAX_TITLE_LENGTH = 200;
+export const MAX_RESOURCE_TYPE_LENGTH = 64;
+export const MAX_STATUS_LENGTH = 64;
 
 /**
  * Event published by a producer. Producers are trusted server-side code, so
@@ -84,14 +86,14 @@ export function parseNotificationEnvelope(input: unknown): EnvelopeParseResult {
   }
 
   const resource = raw.resource as Record<string, unknown> | undefined;
-  const resourceType = nonEmptyString(resource?.type, 64);
+  const resourceType = nonEmptyString(resource?.type, MAX_RESOURCE_TYPE_LENGTH);
   const resourceId = nonEmptyString(resource?.id, MAX_ID_LENGTH);
   if (!resourceType || !resourceId) {
     return { ok: false, error: "resource.type and resource.id are required" };
   }
 
   const data = raw.data as Record<string, unknown> | undefined;
-  const status = nonEmptyString(data?.status, 64);
+  const status = nonEmptyString(data?.status, MAX_STATUS_LENGTH);
   const title = nonEmptyString(data?.title, MAX_TITLE_LENGTH);
   const summary = nonEmptyString(data?.summary, MAX_SUMMARY_LENGTH);
   if (!status || !title || !summary) {

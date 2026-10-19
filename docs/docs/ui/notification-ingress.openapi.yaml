@@ -1,0 +1,165 @@
+openapi: 3.1.0
+info:
+  title: CAIPE Notification Ingress
+  version: 1.0.0
+  description: |
+    Producer-facing REST contract for publishing one notification event.
+
+    - Source of truth is the code in `ui/src/app/api/internal/notifications/events/route.ts` and `ui/src/lib/notifications/`.
+    - Request body schema: `schemas/notification-event.schema.json` (JSON Schema 2020-12).
+    - Auth today is one shared bearer token. Per-publisher identity is PLANNED, NOT IMPLEMENTED: every caller holding the token is equally trusted and the server cannot tell producers apart.
+    - Reachability from outside the cluster or compose network is deployment-specific. See the notes in `api-reference.md`.
+
+    Idempotency
+    - Inbox event key = `type : resource.type : resource.id : attempt_id : recipient subject`.
+    - Redelivery of the same attempt is ignored and still counts as `delivered`. It creates no second notification.
+    - A retry that should notify again must use a new `attempt_id`.
+    - `id` is not part of the inbox key. It is part of the JetStream de-duplication id (`id:attempt_id:subject`).
+
+    Limits
+    - Up to 50 entries in `recipients`. At most 200 resolved recipients per call. Excess is dropped silently.
+    - Field length limits are in the schema.
+    - Unknown fields are dropped.
+servers:
+  - url: http://caipe-ui:3000
+    description: Docker Compose service name and default NOTIFICATIONS_INTERNAL_URL. Adjust per deployment.
+paths:
+  /api/internal/notifications/events:
+    post:
+      operationId: publishNotificationEvent
+      summary: Publish one event to a resolved audience
+      description: |
+        Validates the event, resolves the audience, then publishes one event per recipient. Each recipient's own preferences are applied.
+
+        Audience rules (as implemented today)
+        - Recipients come from the `users` collection. Subject and email used for delivery are taken from that record, never from the request.
+        - Reference by `subject`, by `email` (case-insensitive), or both.
+        - If both are given and resolve to different users, the recipient is counted in `rejected`.
+        - If both are given and only one half matches a user, the recipient is counted in `rejected`. If neither matches, it is `skipped`.
+        - A single reference that matches no user is counted in `skipped`.
+        - `include_org_admins: true` adds direct organization admins from OpenFGA. If OpenFGA fails, admins are omitted and explicit recipients still receive.
+        - Duplicate users are collapsed by subject.
+        - At least one recipient or `include_org_admins: true` is required.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: schemas/notification-event.schema.json
+            example:
+              id: evt-example-1
+              type: ingestion.completed
+              version: 1
+              occurred_at: "2026-10-14T10:00:00Z"
+              resource: { type: datasource, id: example-source }
+              attempt_id: job-example-1
+              recipients:
+                - email: test-user@example.com
+              include_org_admins: false
+              data:
+                status: completed
+                title: Ingestion finished
+                summary: Example source finished indexing.
+                href: /knowledge-bases
+      responses:
+        "202":
+          description: |
+            Accepted. No recipient delivery failed. This does NOT mean every recipient got a notification. Read `results`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishOutcome"
+              example:
+                recipients: 3
+                skipped: 0
+                rejected: 0
+                results: { delivered: 2, queued: 0, disabled: 1, invalid: 0, failed: 0 }
+        "400":
+          description: Body is not JSON, or the request or event failed validation. Nothing was published.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: "unknown event type: example.unknown"
+        "401":
+          description: Missing, malformed, or wrong bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
+        "403":
+          description: |
+            Authenticated, but this publisher is not permitted to send this request. Distinct from 401 (bad credential) and 503 (not configured). Nothing was published. Defined by the publisher identity and permission layer (commit f07b53c17, branch feat/notifications-publisher-policy), which is not part of this branch.
+            Reasons (the `error` text):
+            - the event type is not `<namespace>.<name>`
+            - this publisher may not send events in that namespace
+            - this publisher may not notify org admins
+            - this publisher may list at most N recipients
+            TODAY a 403 cannot happen with the shared token: it maps to one first-party publisher with all namespaces, org admins allowed, and up to 50 recipients. Per-app credentials that can be limited are not implemented.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: this publisher may not notify org admins
+        "503":
+          description: |
+            Either the server has no `NOTIFICATIONS_INTERNAL_TOKEN` configured (body is `{error}`), or at least one delivery failed (body is the same as 202 with `results.failed` greater than 0). Safe to retry with the same `attempt_id`: recipients already delivered are not duplicated. Failure to resolve recipients is reported as one `failed`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/PublishOutcome"
+                  - $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Shared secret `NOTIFICATIONS_INTERNAL_TOKEN`, compared in constant time. One token for all producers.
+        Per-publisher identity (a distinct credential and allowed-type scope per publisher) is planned and NOT implemented.
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    PublishOutcome:
+      type: object
+      required: [recipients, skipped, rejected, results]
+      properties:
+        recipients:
+          type: integer
+          description: Resolved recipients the event was offered to.
+        skipped:
+          type: integer
+          description: Recipients dropped because no user record matched.
+        rejected:
+          type: integer
+          description: Recipients whose subject and email did not name the same user.
+        results:
+          type: object
+          required: [delivered, queued, disabled, invalid, failed]
+          description: Per-recipient outcomes. They sum to `recipients`, except when recipient resolution itself failed.
+          properties:
+            delivered:
+              type: integer
+              description: Stored in the inbox, including a redelivery of an attempt already stored (deduplicated, no second entry). Direct transport only.
+            queued:
+              type: integer
+              description: Published to the durable JetStream stream (jetstream transport). Storage and the preference check happen later in the consumer, so a queued event may still be suppressed or fail to store.
+            disabled:
+              type: integer
+              description: Suppressed. The recipient turned this event off, or the operator set NOTIFICATION_EVENTS_ENABLED=false (then every recipient is disabled). Not an error. Do not retry.
+            invalid:
+              type: integer
+              description: The per-recipient event failed envelope validation after resolution. Not retryable. Normally 0, since the request is validated first.
+            failed:
+              type: integer
+              description: Storage or broker error, or recipient resolution failed. Any value above 0 makes the response 503. Retry.

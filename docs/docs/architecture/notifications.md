@@ -34,7 +34,7 @@ flowchart LR
 
 - Producers never know about users or preferences.
 - A producer failure never reaches the job that produced the event.
-- Each recipient's preferences are checked before anything is written.
+- Each recipient's preferences are checked before an inbox entry is written. With JetStream the check runs in the consumer, after the event is queued.
 
 ## Events
 
@@ -165,6 +165,9 @@ Manage them in **Settings → Notifications**, or from the toggle on the workflo
 - Inbox key: `type : resource type : resource id : attempt id : recipient`.
 - A retried workflow or job has a new attempt ID, so it creates a new notification. A redelivery of the same attempt does not.
 - A unique index on `event_key` makes this safe across replicas.
+- The event `id` is not part of the inbox key. It only feeds the JetStream duplicate id (`id:attempt_id:recipient subject`).
+- A redelivered attempt in direct mode is reported as `delivered`, with no second entry.
+- Contract: [notification-ingress.openapi.yaml](../ui/notification-ingress.openapi.yaml).
 
 ## Failure behavior
 
@@ -174,7 +177,8 @@ Manage them in **Settings → Notifications**, or from the toggle on the workflo
 | NATS down while publishing | Publish reports `failed` and the job is unaffected. |
 | Consumer crashes mid-write | The message is redelivered. The key prevents a duplicate. |
 | Preference changed while an event is in flight | The latest preference wins, checked when the event is written. |
-| Recipient cannot be resolved to a subject and email | Skipped and counted. |
+| Recipient matches no user record | Skipped and counted in `skipped`. |
+| Subject and email name different users, or only one of the two matches a user | Rejected and counted in `rejected`. |
 | OpenFGA unavailable | Explicit recipients still receive. Org admins are skipped. |
 
 Known limit: a process that stops between finishing a job and sending its event can lose that event. An outbox would close this gap and is not built.
@@ -188,7 +192,7 @@ Known limit: a process that stops between finishing a job and sending its event 
 - Today the shared token maps to one **first-party** publisher with full authority. Treat the token holder as fully trusted, and keep external apps outside it.
 - Per-app credentials are not built. They would be verified in `authenticatePublisher` and return an `app` identity, so the route and the permission checks do not change. Issuing them belongs to the app install flow.
 - Recipients are resolved from the UI server's own user records. Both the subject and the email are taken from that one record, never from the request.
-- A request that names a subject and an email belonging to different users is rejected for that recipient. A complete pair with no matching user record is skipped. The response counts both as `rejected` and `skipped`.
+- A request that names a subject and an email belonging to different users is rejected for that recipient. A pair where only one half matches a user is also rejected. A reference that matches no user is skipped. The response reports the two counts separately as `rejected` and `skipped`.
 - Notification text is generic. Prompts, step errors, documents, and tool output are never included.
 - Links must be relative paths. External URLs are rejected.
 - "Send test" only ever notifies the caller, and is limited to 10 per minute.
@@ -218,7 +222,7 @@ Known limit: a process that stops between finishing a job and sending its event 
 - Built-in event: add it to the seed in `taxonomy.ts` with its category, copy, default, and severity.
 - App event: add it to the app's catalog document. No code change.
 - From the UI server, call `publishNotificationRequest` with the event and its recipients.
-- From another service, POST the envelope to `/api/internal/notifications/events`. See the [API reference](../ui/api-reference.md#internal-service-routes).
+- From another service, POST the event request (envelope plus `recipients` and/or `include_org_admins`) to `/api/internal/notifications/events`. See the [API reference](../ui/api-reference.md#internal-service-routes).
 - Only add an event that actually fires. Keep the summary free of prompts, errors, and document content.
 
 ## Local testing
