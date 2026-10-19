@@ -16,6 +16,7 @@ import { authorizePublish } from "@/lib/notifications/publisher";
 import { authenticatePublisher } from "@/lib/notifications/publisher.server";
 import { publishNotificationRequest } from "@/lib/notifications/fanout.server";
 import { parseNotificationEventRequest } from "@/lib/notifications/request";
+import { ensureNotificationCatalogsLoaded } from "@/lib/notifications/registry.server";
 import { NextRequest } from "next/server";
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -35,6 +36,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: "Request body must be JSON" }, { status: 400 });
   }
 
+  await ensureNotificationCatalogsLoaded();
   const parsed = parseNotificationEventRequest(body);
   if (parsed.ok === false) {
     return Response.json({ error: parsed.error }, { status: 400 });

@@ -114,6 +114,6 @@ curl -X POST http://caipe-ui:3000/api/internal/notifications/events \
   }'
 ```
 
-Envelope fields are documented in `ui/src/lib/notifications/envelope.ts`. The event catalog is in `ui/src/lib/notifications/taxonomy.ts`.
+Envelope fields are documented in `ui/src/lib/notifications/envelope.ts`. The event registry is in `ui/src/lib/notifications/registry.ts`. See [Event Notifications](../architecture/notifications.md#event-registry).
 
 Route files under `ui/src/app/api` are the implementation source of truth.

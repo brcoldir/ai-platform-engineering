@@ -9,7 +9,8 @@ import {
   isNotificationEnabled,
   type NotificationPreferences,
 } from "@/lib/notifications/preferences";
-import { NOTIFICATION_EVENT_CATALOG } from "@/lib/notifications/taxonomy";
+import { getEventEntry } from "@/lib/notifications/registry";
+import { ensureNotificationCatalogsLoaded } from "@/lib/notifications/registry.server";
 import {
   closeNotificationConnection,
   ensureNotificationStream,
@@ -48,6 +49,7 @@ export async function publishNotificationEvent(
     return "disabled";
   }
 
+  await ensureNotificationCatalogsLoaded();
   const parsed = parseNotificationEnvelope(input);
   if (parsed.ok === false) {
     console.warn("[notifications] dropped invalid event:", parsed.error);
@@ -93,12 +95,15 @@ async function publishToJetStream(
 export async function storeNotificationEnvelope(
   envelope: NotificationEnvelope,
 ): Promise<NotificationPublishOutcome> {
+  // An app can be removed between validation and storage.
+  const definition = getEventEntry(envelope.type);
+  if (!definition) return "invalid";
+
   const preferences = await loadNotificationPreferences(envelope.recipient_email);
   if (!isNotificationEnabled(envelope.type, preferences)) {
     return "disabled";
   }
 
-  const definition = NOTIFICATION_EVENT_CATALOG[envelope.type];
   await createInAppNotification({
     eventKey: notificationEventKey(envelope, envelope.recipient_subject),
     recipientUserSubjects: [envelope.recipient_subject],
@@ -170,6 +175,7 @@ async function handleJetStreamMessage(message: JsMsg): Promise<void> {
     return;
   }
 
+  await ensureNotificationCatalogsLoaded();
   const parsed = parseNotificationEnvelope(input);
   if (parsed.ok === false) {
     console.warn("[notifications] dropped invalid message:", parsed.error);

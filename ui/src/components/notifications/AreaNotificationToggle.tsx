@@ -1,38 +1,42 @@
 "use client";
 
 import { SettingsSwitch } from "@/components/settings/shared/SettingsSwitch";
+import { fallbackCategoryCopy } from "@/lib/notifications/display";
 import { cn } from "@/lib/utils";
 import { BellRing, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export type NotificationArea = "workflow" | "ingestion" | "agent";
+/** A category id. Built-in pages use workflow, ingestion, and agent. An app category works too. */
+export type NotificationArea = string;
 
-// The events a page-level toggle controls. These are the completion and
-// failure style events people care about on that page. Started events are
-// left to the full settings page. Writes go to the same stored preference as
-// Settings, so the two always agree.
-const AREA_EVENTS: Record<NotificationArea, { events: string[]; label: string; description: string }> = {
-  workflow: {
-    events: ["workflow.completed", "workflow.failed", "workflow.requires_input"],
-    label: "Notify me about workflows",
-    description: "When your workflow runs finish, fail, or need your input.",
-  },
-  ingestion: {
-    events: ["ingestion.completed", "ingestion.failed"],
-    label: "Notify me about ingestion",
-    description: "When a source you touched finishes or fails to ingest.",
-  },
-  agent: {
-    events: ["agent.completed", "agent.failed"],
-    label: "Notify me about agent runs",
-    description: "When your agent tasks and longer chat runs finish or fail.",
-  },
+// The events a built-in page-level toggle controls. These are the completion
+// and failure style events people care about on that page. Started events are
+// left to the full settings page. Any other category toggles all of its events.
+// Writes go to the same stored preference as Settings, so the two always agree.
+const BUILTIN_AREA_EVENTS: Record<string, string[]> = {
+  workflow: ["workflow.completed", "workflow.failed", "workflow.requires_input"],
+  ingestion: ["ingestion.completed", "ingestion.failed"],
+  agent: ["agent.completed", "agent.failed"],
+};
+
+// Used when the API sends no category details, so older responses still render.
+const FALLBACK_LABELS: Record<string, string> = {
+  workflow: "Notify me about workflows",
+  ingestion: "Notify me about ingestion",
+  agent: "Notify me about agent runs",
 };
 
 interface EventRow {
   type: string;
+  category?: string;
   enabled: boolean;
+}
+
+interface CategoryDetail {
+  id: string;
+  label?: string;
+  description?: string;
 }
 
 interface Props {
@@ -43,16 +47,17 @@ interface Props {
 type Status = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
 
 export function AreaNotificationToggle({ area, className }: Props): React.ReactElement {
-  const copy = AREA_EVENTS[area];
   const [rows, setRows] = useState<EventRow[] | null>(null);
+  const [details, setDetails] = useState<CategoryDetail[]>([]);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   // Serialize writes so a slow response cannot overwrite a newer choice.
   const queueRef = useRef<Promise<void>>(Promise.resolve());
 
   const apply = useCallback((data: unknown): boolean => {
-    const events = (data as { events?: EventRow[] } | null)?.events;
-    if (!Array.isArray(events)) return false;
-    setRows(events);
+    const view = data as { events?: EventRow[]; categoryDetails?: CategoryDetail[] } | null;
+    if (!Array.isArray(view?.events)) return false;
+    setRows(view.events);
+    if (Array.isArray(view.categoryDetails)) setDetails(view.categoryDetails);
     return true;
   }, []);
 
@@ -77,7 +82,18 @@ export function AreaNotificationToggle({ area, className }: Props): React.ReactE
     };
   }, [apply]);
 
-  const enabled = rows !== null && copy.events.every((type) => rows.find((row) => row.type === type)?.enabled === true);
+  const areaEvents =
+    BUILTIN_AREA_EVENTS[area] ?? (rows ?? []).filter((row) => row.category === area).map((row) => row.type);
+  const detail = details.find((candidate) => candidate.id === area);
+  const fallback = fallbackCategoryCopy(area);
+  const copy = {
+    events: areaEvents,
+    label: detail?.label
+      ? `Notify me about ${detail.label.toLowerCase()}`
+      : (FALLBACK_LABELS[area] ?? `Notify me about ${fallback.label.toLowerCase()}`),
+    description: detail?.description || fallback.description,
+  };
+  const enabled = rows !== null && copy.events.length > 0 && copy.events.every((type) => rows.find((row) => row.type === type)?.enabled === true);
 
   const change = (value: boolean): void => {
     setStatus({ kind: "saving" });
@@ -101,6 +117,9 @@ export function AreaNotificationToggle({ area, className }: Props): React.ReactE
       }
     });
   };
+
+  // A category with no events, such as an app that was uninstalled, has nothing to toggle.
+  if (rows !== null && copy.events.length === 0) return <></>;
 
   return (
     <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 text-sm", className)} data-testid={`area-notification-${area}`}>
