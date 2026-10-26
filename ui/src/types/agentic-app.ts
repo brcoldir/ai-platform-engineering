@@ -83,6 +83,7 @@ export interface PublicAgenticApp {
   capabilities: string[];
   uiMode?: "native-package" | "iframe";
   hostPaths?: string[];
+  assistantOverlay?: "host" | "app";
   assistantEnabled?: boolean;
   assistantAgentId?: string;
   assistantLabel?: string;
