@@ -1,3 +1,9 @@
+## 1.3.0-rc.18 (2026-10-26)
+
+### Fix
+
+- **auth**: preserve shared token consistency across replicas (#3085)
+
 ## 1.3.0-rc.17 (2026-10-26)
 
 ### Feat
