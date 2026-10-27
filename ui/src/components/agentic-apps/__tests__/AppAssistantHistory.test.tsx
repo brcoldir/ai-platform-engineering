@@ -14,7 +14,7 @@ jest.mock("@/native-extensions/HostConversationActions", () => ({ __esModule: tr
 const binding = { conversation_surface: "agentic-app", agentic_app_id: "example-app", agentic_app_agent_id: "example-agent" };
 function conversation(id: string, metadata?: Record<string, unknown>): Conversation {
   return { id, title: id, participants: [{ type: "agent", id: "example-agent" }], metadata,
-    createdAt: new Date("2026-01-01"), updatedAt: new Date("2026-01-01"), messages: [], streamEvents: [] };
+    createdAt: new Date("2026-01-01"), updatedAt: new Date("2026-01-01"), messages: [{ id: "example-message", role: "user", content: "Example question", timestamp: new Date("2026-01-01") }], streamEvents: [] };
 }
 
 beforeEach(() => {
@@ -56,4 +56,12 @@ it("defers each row's validation and controls until its actions are requested", 
   expect(await screen.findByText("Validated row actions")).toBeInTheDocument();
   expect(mockActions).toHaveBeenCalledTimes(1);
   expect(mockActions).toHaveBeenCalledWith(expect.objectContaining({ appId: "example-app", agentId: "example-agent", conversationId: "Allowed app chat" }));
+});
+
+it.each(["localStorage", "mongodb"])("includes unbound history only with legacy opt-in in %s mode", async mode => {
+  mockStorageMode.mockReturnValue(mode);
+  render(<AppAssistantHistory appId="example-app" agentId="example-agent" includeLegacy onSelect={jest.fn()} onArchived={jest.fn()} />);
+  expect(await screen.findByRole("button", { name: "Unbound chat" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Allowed app chat" })).toBeInTheDocument();
+  for (const item of mockConversations.slice(2)) expect(screen.queryByText(item.title)).toBeNull();
 });

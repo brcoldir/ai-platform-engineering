@@ -43,16 +43,19 @@ jest.mock("@/components/chat/DynamicAgentChatPanel", () => ({
     conversationId,
     agentId,
     clientContext,
+    readOnly,
   }: {
     conversationId?: string;
     agentId: string;
     clientContext?: Record<string, unknown>;
+    readOnly?: boolean;
   }) => (
     <div
       data-testid="chat-panel"
       data-conversation-id={conversationId}
       data-agent-id={agentId}
       data-context={JSON.stringify(clientContext ?? {})}
+      data-read-only={String(Boolean(readOnly))}
     />
   ),
 }));
@@ -71,7 +74,7 @@ describe("AgenticAppAssistantOverlay", () => {
     mockSetActiveConversation.mockImplementation((id) => { mockChatStoreState.activeConversationId = id; });
     mockFindConversation.mockImplementation(async () => mockChatStoreState.conversations.at(-1) ?? null);
     mockRestoreConversation.mockImplementation(async (appId: string, agentId: string, id: string) => ({ saved: {
-      _id: id, title: "Saved app chat", participants: [{ type: "agent", id: agentId }],
+      _id: id, title: "Saved app chat", access_level: "owner", participants: [{ type: "agent", id: agentId }],
       created_at: new Date("2026-01-01"), updated_at: new Date("2026-01-01"),
       metadata: { conversation_surface: "agentic-app", agentic_app_id: appId, agentic_app_agent_id: agentId },
     } }));
@@ -139,6 +142,46 @@ describe("AgenticAppAssistantOverlay", () => {
     expect(chat).toHaveAttribute("data-agent-id", "agent-example");
   });
 
+  it("dismisses display settings on the first Escape and the assistant on the next", async () => {
+    const onOpenChange = jest.fn();
+    render(<AgenticAppAssistantOverlay appId="example-app" appName="Example App" assistantAgentId="agent-example"
+      activeContext={null} onClearContext={jest.fn()} open onOpenChange={onOpenChange} />);
+    await screen.findByTestId("chat-panel");
+    fireEvent.click(screen.getByRole("button", { name: "Assistant display settings" }));
+    await screen.findByLabelText("Assistant text size");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByLabelText("Assistant text size")).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("retains server ownership and read-only access when restoring a shared deep link", async () => {
+    const restore = mockRestoreConversation.getMockImplementation()!;
+    mockRestoreConversation.mockImplementationOnce(async (...args: unknown[]) => {
+      const result = await restore(...args);
+      return { saved: { ...result.saved, owner_id: "owner@example.test", access_level: "shared_readonly" } };
+    });
+    window.history.replaceState(null, "", "/example?assistant_chat=shared-chat");
+    renderExampleOverlay();
+    expect(await screen.findByTestId("chat-panel")).toHaveAttribute("data-read-only", "true");
+    expect(mockChatStoreState.conversations.find(item => item.id === "shared-chat"))
+      .toMatchObject({ owner_id: "owner@example.test", accessLevel: "shared_readonly" });
+  });
+
+  it("keeps display settings closed when reopening the assistant", async () => {
+    const props = { appId: "example-app", appName: "Example App", assistantAgentId: "agent-example",
+      activeContext: null, onClearContext: jest.fn(), onOpenChange: jest.fn() };
+    const { rerender } = render(<AgenticAppAssistantOverlay {...props} open />);
+    await screen.findByTestId("chat-panel");
+    fireEvent.click(screen.getByRole("button", { name: "Assistant display settings" }));
+    await screen.findByLabelText("Assistant text size");
+    await act(async () => rerender(<AgenticAppAssistantOverlay {...props} open={false} />));
+    rerender(<AgenticAppAssistantOverlay {...props} open />);
+    await screen.findByTestId("chat-panel");
+    expect(screen.queryByLabelText("Assistant text size")).toBeNull();
+  });
+
   it.each([undefined, { agentic_app_id: "secondary-app" }, { agentic_app_id: "example-app" }])(
     "rejects deep links without a complete matching app binding: %j", async metadata => {
       window.history.replaceState(null, "", "/example?assistant_chat=other-chat");
@@ -204,7 +247,9 @@ describe("AgenticAppAssistantOverlay", () => {
 
   it("clears a failed deep-link error when a valid history selection succeeds", async () => {
     window.history.replaceState(null, "", "/example?assistant_chat=denied-chat");
-    mockChatStoreState.conversations = [makeConversation("history-chat", "2026-01-01")];
+    const history = makeConversation("history-chat", "2026-01-01");
+    history.messages.push({ id: "example-message", role: "user", content: "Example question", timestamp: new Date("2026-01-01") });
+    mockChatStoreState.conversations = [history];
     mockRestoreConversation.mockRejectedValueOnce(new Error("Access denied"));
     renderExampleOverlay();
     await screen.findByRole("alert");
@@ -212,6 +257,24 @@ describe("AgenticAppAssistantOverlay", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Example App Assistant" }));
     await waitFor(() => expect(screen.getByTestId("chat-panel")).toHaveAttribute("data-conversation-id", "history-chat"));
     expect(screen.queryByText("Access denied")).toBeNull();
+  });
+
+  it("revalidates changed legacy aliases and hides the selected chat for conflicting links", async () => {
+    const overlay = () => <AgenticAppAssistantOverlay appId="example-app" appName="Example App"
+      assistantAgentId="agent-example" activeContext={null} onClearContext={jest.fn()} open onOpenChange={jest.fn()}
+      options={{ version: "1.0", legacyConversationQueryParams: ["legacy_chat"] }} />;
+    window.history.replaceState(null, "", "/example?legacy_chat=chat-a");
+    const view = render(overlay());
+    await waitFor(() => expect(screen.getByTestId("chat-panel")).toHaveAttribute("data-conversation-id", "chat-a"));
+    expect(window.location.search).toBe("?assistant_chat=chat-a");
+    window.history.pushState(null, "", "/example?legacy_chat=chat-b");
+    view.rerender(overlay());
+    await waitFor(() => expect(screen.getByTestId("chat-panel")).toHaveAttribute("data-conversation-id", "chat-b"));
+    window.history.pushState(null, "", "/example?assistant_chat=chat-a&legacy_chat=chat-b");
+    view.rerender(overlay());
+    expect(await screen.findByRole("alert")).toHaveTextContent("conflicting assistant conversation link");
+    expect(screen.queryByTestId("chat-panel")).toBeNull();
+    expect(mockCreateConversation).not.toHaveBeenCalled();
   });
 
   it("passes validated app context into the chat panel and restores the prior chat", async () => {
@@ -263,7 +326,7 @@ describe("AgenticAppAssistantOverlay", () => {
       "latest",
     );
     expect(mockCreateConversation).not.toHaveBeenCalled();
-    expect(mockLoadMessagesFromServer).toHaveBeenCalledWith("latest");
+    expect(mockLoadMessagesFromServer).toHaveBeenCalledWith("latest", { force: true });
   });
 
   it("unmounts a deleted chat and shows replacement failure, then retries safely", async () => {
@@ -361,7 +424,7 @@ describe("AgenticAppAssistantOverlay", () => {
     await waitFor(() => expect(screen.getByTestId("chat-panel")).toHaveAttribute("data-conversation-id", "first-app-chat"));
     rerender(<AgenticAppAssistantOverlay {...props} appId="secondary-app" />);
     await waitFor(() => expect(screen.getByTestId("chat-panel")).toHaveAttribute("data-conversation-id", "second-app-chat"));
-    expect(mockFindConversation).toHaveBeenLastCalledWith([], "secondary-app", "agent-example");
+    expect(mockFindConversation).toHaveBeenLastCalledWith([], "secondary-app", "agent-example", undefined);
   });
 
   it("retries a failed initialization when the assistant is reopened", async () => {
