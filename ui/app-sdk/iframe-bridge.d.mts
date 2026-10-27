@@ -1,10 +1,14 @@
 import type { AppAssistantContext } from "./index.js";
+export const INTERFACE_SHADOWS_CSS: string;
 export interface AgenticAppBridgeCapabilities {
   assistantOptions?: import("./assistant-options.mjs").AssistantOptions;
   assistant: boolean;
   assistantDraft?: boolean;
   context: boolean;
   navigation: boolean;
+  queryNavigation?: boolean;
+  pathNavigation?: boolean;
+  breadcrumbs?: boolean;
   composerExtensions: string[];
 }
 export interface AgenticAppBridge {
@@ -13,7 +17,8 @@ export interface AgenticAppBridge {
   closeAssistant(): void;
   openAssistant(context?: AppAssistantContext, draft?: AssistantDraft): void;
   setContext(context: AppAssistantContext): void;
-  navigate(href: string): void;
+  navigate(href: string, options?: { history?: "push" | "replace" }): void;
+  setBreadcrumbs(breadcrumbs: Array<{ label: string; href?: string }>, route: string): void;
   dispose(): void;
 }
 export function createAgenticAppBridge(options: {
