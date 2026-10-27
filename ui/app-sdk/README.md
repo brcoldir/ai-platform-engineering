@@ -295,3 +295,27 @@ using installation `host_route_claims`:
 - Apps use `bridge.navigate(href)` for host URL synchronization and dispose the
   bridge on unmount. Unsupported versions/capabilities report explicit errors.
 - Same-origin iframe hosting is a trust boundary, not JavaScript isolation.
+
+## Shared host assistant
+
+Native and iframe apps with `ui.assistant.overlay: "host"` use the same branded host popup,
+resize behavior, context handling and chat panel. Native packages request it
+through the optional `props.chat.assistant` capability;
+iframe apps use `bridge.openAssistant(context)` after the capability handshake.
+Native packages must guard this capability before calling `open` or `setContext`:
+
+```ts
+const assistant = props.chat?.assistant;
+if (assistant) {
+  assistant.open(context);
+}
+```
+
+The host omits the capability in home slots, when the app has no `ui.assistant`,
+or when it declares `ui.assistant.overlay: "app"`. `assistant.setContext(context)`
+updates context without opening the popup.
+App-owned overlays remain supported explicitly. Context passes the existing
+size/secret filters and stays untrusted data, never an authorization grant.
+The native wrapper resolves the installation's bound agent and agent-use policy
+before mounting the popup; chat dependencies load lazily. Account, subject,
+organization and role changes reset the assistant binding.
