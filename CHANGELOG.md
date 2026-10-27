@@ -1,3 +1,10 @@
+## 1.3.0-rc.20 (2026-10-27)
+
+### Fix
+
+- **chat**: avoid false interrupted banner for pending turns (#3095)
+- **agentic-apps**: improve shared assistant popup usability (#3107)
+
 ## 1.3.0-rc.19 (2026-10-27)
 
 ### Feat
