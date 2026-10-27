@@ -1,3 +1,32 @@
+## 1.3.0-rc.19 (2026-10-27)
+
+### Feat
+
+- **ui**: align hosted navigation and preferences (#3105)
+- **chat**: unify hosted chat and breadcrumbs (#3104)
+- **apps**: stabilize assistant drafts and iframe navigation (#3102)
+- **ui**: improve app catalog cards and metadata search (#2977)
+- **agentic-apps**: complete shared assistant adoption behavior (#3067)
+- **app-sdk**: declare shared assistant extension contracts (#3066)
+- **agentic-apps**: add shared assistant history and actions (#3064)
+- **agentic-apps**: include iframe apps in sidebar navigation (#3061)
+
+### Fix
+
+- **apps**: restore external MCP auth and iframe shortcuts (#3099)
+- **docs**: patch qs serialization denial of service (#3106)
+- **ui**: synchronize hosted theme and dark utilities (#3103)
+- **auth**: port consistent browser sessions to main (#3084)
+- **skills**: refetch catalog after deleting a skill so its card disappears (#3077)
+- **deps**: resolve current dependency scanning alerts (#3089)
+- **runtime**: pin patched Node releases for Node2Shell (#3088)
+- **agentic-apps**: honor iframe assistant overlay ownership (#3060)
+
+### Refactor
+
+- **rag**: remove cnoe-agent-utils from ontology (#3050)
+- **agentic-apps**: share assistant popup across renderers (#3063)
+
 ## 1.3.0-rc.18 (2026-10-26)
 
 ### Fix
