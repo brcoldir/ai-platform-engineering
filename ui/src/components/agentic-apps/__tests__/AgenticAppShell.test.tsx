@@ -1,10 +1,11 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { AgenticAppShell } from "../AgenticAppShell";
 
 jest.mock("next-auth/react", () => ({
   useSession: () => ({ status: "authenticated", data: { user: { email: "test-user@example.test" } } }),
 }));
+let mockSearch = "";
 
 const mockResolveUsableChatAgent = jest.fn();
 
@@ -12,7 +13,7 @@ const mockRouter = { push: jest.fn() };
 
 jest.mock("next/navigation", () => ({
   useRouter: () => mockRouter,
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(mockSearch),
 }));
 
 jest.mock("@/lib/chat-agent-selection", () => ({
@@ -23,18 +24,24 @@ jest.mock("../AgenticAppAssistantOverlay", () => ({
   AgenticAppAssistantOverlay: ({
     assistantLabel,
     activeContext,
+    composerDraft,
+    onComposerDraftApplied,
     open,
   }: {
     assistantLabel?: string;
     activeContext: { title?: string } | null;
+    composerDraft?: { id: string; text: string } | null;
+    onComposerDraftApplied?: (id: string) => void;
     open: boolean;
   }) => (
     <div
       data-testid="assistant-overlay"
       data-open={String(open)}
+      data-draft={composerDraft?.text ?? ""}
       data-context={activeContext?.title ?? ""}
     >
       {assistantLabel ?? "Ask CAIPE"}
+      <button onClick={() => composerDraft && onComposerDraftApplied?.(composerDraft.id)}>Apply draft</button>
     </div>
   ),
 }));
@@ -57,6 +64,8 @@ function app(overrides: Record<string, unknown> = {}) {
 describe("AgenticAppShell", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSearch = "";
+    window.history.replaceState(null, "", "/apps/example-app");
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -88,6 +97,52 @@ describe("AgenticAppShell", () => {
       requestedAgentId: "agent-example",
       requireAvailableAgent: true,
     });
+  });
+
+  it.each([false, true])("syncs queries without reloading the frame or catalog (host route=%s)", async hostRoute => {
+    const path = hostRoute ? ["example"] : [];
+    const publicPath = hostRoute ? "/example" : "/apps/example-app";
+    const runtimePath = hostRoute ? "/apps/example-app/example" : publicPath;
+    window.history.replaceState(null, "", publicPath);
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200, json: async () => ({ item: app({ assistantEnabled: false }) }) });
+    const { rerender } = render(<AgenticAppShell appId="example-app" path={path} hostRoute={hostRoute} />);
+    const iframe = await screen.findByTitle("Example App") as HTMLIFrameElement;
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: iframe.contentWindow, origin: window.location.origin,
+        data: { type: "caipe.agenticApp.bridge.connect.v1", appId: "example-app", version: "1.0" },
+      }));
+    });
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: iframe.contentWindow, origin: window.location.origin,
+        data: { type: "caipe.agenticApp.navigate.v1", appId: "example-app", version: "1.0", href: `${publicPath}?tab=instances&search=example`, history: "push" },
+      }));
+    });
+    expect(window.location.search).toBe("?tab=instances&search=example");
+    mockSearch = window.location.search;
+    rerender(<AgenticAppShell appId="example-app" path={path} hostRoute={hostRoute} />);
+    expect(screen.getByTitle("Example App")).toBe(iframe);
+    expect(iframe).toHaveAttribute("src", runtimePath);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("assistant-overlay")).not.toBeInTheDocument();
+  });
+
+  it("keeps shared assistant capabilities in every query handshake reply", async () => {
+    render(<AgenticAppShell appId="example-app" path={[]} />);
+    const iframe = await screen.findByTitle("Example App") as HTMLIFrameElement;
+    await screen.findByTestId("assistant-overlay");
+    const post = jest.spyOn(iframe.contentWindow!, "postMessage");
+    act(() => window.dispatchEvent(new MessageEvent("message", {
+      source: iframe.contentWindow, origin: window.location.origin,
+      data: { type: "caipe.agenticApp.bridge.connect.v1", appId: "example-app", version: "1.0" },
+    })));
+    const replies = post.mock.calls.filter(([message]) => message.type === "caipe.agenticApp.bridge.capabilities.v1");
+    expect(replies).toHaveLength(1);
+    for (const [message] of replies) expect(message.capabilities).toMatchObject({
+      assistant: true, queryNavigation: true, composerExtensions: expect.arrayContaining(["configuration.v1"]),
+    });
+    post.mockRestore();
   });
 
   it("opens the assistant and accepts context from its own iframe", async () => {
@@ -157,6 +212,29 @@ describe("AgenticAppShell", () => {
     send("bridge.connect", window.location.origin, window);
     expect(postMessage).not.toHaveBeenCalled();
     postMessage.mockRestore();
+  });
+
+  it("accepts a draft only from the same-origin app iframe", async () => {
+    render(<AgenticAppShell appId="example-app" path={[]} />);
+    const iframe = (await screen.findByTitle("Example App")) as HTMLIFrameElement;
+    const overlay = await screen.findByTestId("assistant-overlay");
+    const send = (origin: string, source: MessageEventSource | null, appId = "example-app", text = "Find source") => act(() => {
+      window.dispatchEvent(new MessageEvent("message", { origin, source, data: {
+        type: "caipe.agenticApp.assistant.open.v1", version: "1.0", appId, draft: { id: "request-1", text },
+      } }));
+    });
+    send("https://other.example.com", iframe.contentWindow);
+    send(window.location.origin, window);
+    send(window.location.origin, iframe.contentWindow, "other-app");
+    expect(overlay).toHaveAttribute("data-open", "false");
+    send(window.location.origin, iframe.contentWindow, "example-app", "x".repeat(12001));
+    expect(overlay).toHaveAttribute("data-draft", "");
+    send(window.location.origin, iframe.contentWindow);
+    expect(overlay).toHaveAttribute("data-draft", "Find source");
+    fireEvent.click(screen.getByRole("button", { name: "Apply draft" }));
+    expect(overlay).toHaveAttribute("data-draft", "");
+    send(window.location.origin, iframe.contentWindow);
+    expect(overlay).toHaveAttribute("data-draft", "");
   });
 
   it("uses an authorized default agent when the app does not specify one", async () => {
