@@ -7,12 +7,14 @@ import { useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { ASSISTANT_EXTENSIONS, validateAssistantConfiguration, type AssistantConfiguration } from "../../../app-sdk/assistant-options.mjs";
 import { readAssistantDeepLink } from "@/lib/agentic-apps/assistant-links";
+import { rememberAssistantPresentation } from "@/lib/agentic-apps/assistant-presentation";
 import { ownsAppPath } from "@/lib/agentic-apps/host-routes";
 import { HostedAgenticAppFrame } from "./HostedAgenticAppFrame";
 
 import { AgenticAppAssistantOverlay } from "@/components/agentic-apps/AgenticAppAssistantOverlay";
 import { parseAssistantDraft, type AssistantDraft } from "@/lib/agentic-apps/assistant-draft";
 import { validateAssistantContextMessage } from "@/lib/agentic-apps/assistant-context";
+import { WorkspaceBreadcrumbs } from "@/components/layout/WorkspacePageHeader";
 import { buildAgenticAppPublicPath } from "@/lib/agentic-apps/runtime";
 import { connectFrameQueryNavigation } from "@/lib/agentic-apps/frame-query-navigation";
 import { nativeAgenticAppDestination } from "@/lib/agentic-apps/public-app";
@@ -253,6 +255,7 @@ export function AgenticAppShell({
       if (message.type === "caipe.agenticApp.assistant.configure.v1") {
         try {
           validateAssistantConfiguration(message.configuration, app.assistantOptions);
+          if (app.assistantAgentId) rememberAssistantPresentation(appId, app.assistantAgentId, session, message.configuration, app.assistantOptions);
           setConfiguration(message.configuration);
           if (!message.configuration.visible) setAssistantOpen(false);
           setBridgeError(null);
@@ -281,7 +284,7 @@ export function AgenticAppShell({
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [appId, assistantConfigured, assistantAgent, assistantOpen, publicPath, router, state]);
+  }, [appId, assistantConfigured, assistantAgent, assistantOpen, publicPath, router, state, session]);
 
   useEffect(() => {
     const target = iframeRef.current?.contentWindow;
@@ -329,20 +332,13 @@ export function AgenticAppShell({
   const requestedRuntimePath = `${buildAgenticAppPublicPath(appId, path)}${query ? `?${query}` : ""}${hash}`;
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-3 border-b bg-background px-4 py-2">
-        <Link
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-          href="/apps"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden /> Apps
-        </Link>
-        <span className="text-muted-foreground" aria-hidden>
-          /
-        </span>
-        <span className="truncate text-sm font-medium">
-          {state.app.displayName}
-        </span>
-      </div>
+      <WorkspaceBreadcrumbs
+        breadcrumbs={[
+          { label: "Home", href: "/" },
+          { label: "Apps", href: "/apps" },
+          { label: state.app.displayName },
+        ]}
+      />
       {assistantConfigured && assistantError ? <p role="alert" className="p-3 text-sm text-destructive">
         {assistantError} <button type="button" onClick={() => setAssistantRetry(n => n + 1)} className="underline">Retry assistant</button>
       </p> : null}
@@ -357,6 +353,7 @@ export function AgenticAppShell({
       />
       {assistantConfigured && assistantAgent && (configuration?.visible ?? !state.app.assistantOptions?.requireConfiguration) ? (
         <AgenticAppAssistantOverlay
+          assistantAgent={assistantAgent.config}
           key={`${identity}:${appId}:${assistantAgent.id}`}
           options={state.app.assistantOptions} configuration={configuration ?? undefined}
           appId={state.app.appId}
