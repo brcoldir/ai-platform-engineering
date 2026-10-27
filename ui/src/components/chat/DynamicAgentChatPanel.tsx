@@ -115,6 +115,8 @@ interface ChatPanelProps {
   clientContext?: Record<string, unknown>;
   requestOptions?: Record<string, unknown>;
   composerHeader?: React.ReactNode;
+  /** App suggestions only fill the composer; sending remains an explicit user action. */
+  suggestedPrompts?: string[];
   placeholder?: string;
   emptyStateTitle?: string;
   showAgentHeader?: boolean;
@@ -134,7 +136,7 @@ export function ChatPanel({
   isLoadingMessages,
   onAgentRelinked,
   clientContext: suppliedClientContext,
-  requestOptions, composerHeader, placeholder, emptyStateTitle, showAgentHeader = true, showAuditNotice = true, feedbackPrompt,
+  requestOptions, composerHeader, suggestedPrompts, placeholder, emptyStateTitle, showAgentHeader = true, showAuditNotice = true, feedbackPrompt,
 }: ChatPanelProps) {
   // Derive display values from agent object
   const agentGradient = agent?.ui?.gradient_theme ?? null;
@@ -382,6 +384,7 @@ export function ChatPanel({
     .find((item) => item.id === (conversationId ?? state.activeConversationId))
     ?.title?.trim()) || "New chat";
   const isAutonomousHistory = conversation?.source === "autonomous";
+  const promptSuggestions = suggestedPrompts?.filter(prompt => prompt.trim()).slice(0, 8) ?? [];
   const autonomousFollowUps = useAutonomousFollowUps(
     isAutonomousHistory && !panelReadOnly ? conversation?.task_id : undefined,
   );
@@ -2352,6 +2355,12 @@ export function ChatPanel({
                       useGlobalTheme
                     />
                     <h2 className="text-2xl font-bold mb-4">{emptyStateTitle ?? `Welcome to ${getConfig('appName')}`}</h2>
+                    {!panelReadOnly && !isAutonomousHistory && promptSuggestions.length ? <div role="group" aria-label="Suggested prompts" className="mx-auto mb-4 flex max-w-lg flex-wrap justify-center gap-2">
+                      {promptSuggestions.map((prompt, index) => <Button key={index} type="button" variant="outline" size="sm"
+                        disabled={isThisConversationStreaming || isRemoteResponse || Boolean(pendingUserInput || pendingToolApproval)}
+                        onClick={() => { setInput(prompt); inputRef.current?.focus(); }}
+                        className="h-auto whitespace-normal">{prompt}</Button>)}
+                    </div> : null}
                     {!emptyStateTitle && <>
                     <p className="text-muted-foreground mb-3">
                       Start your conversation with

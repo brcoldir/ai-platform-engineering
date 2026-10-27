@@ -1,5 +1,6 @@
 import { apiClient } from "@/lib/api-client";
-import { findLatestAppConversation } from "../assistant-conversations";
+import { findLatestAppConversation, mergeAppConversation } from "../assistant-conversations";
+import type { Conversation } from "@/types/a2a";
 
 jest.mock("@/lib/api-client", () => ({ apiClient: { getConversations: jest.fn() } }));
 jest.mock("@/lib/storage-config", () => ({ getStorageMode: () => "mongodb" }));
@@ -9,7 +10,7 @@ it("finds an owned app conversation beyond page one without the sidebar filter",
   lookup.mockResolvedValueOnce({ items: [], has_more: true } as never);
   lookup.mockResolvedValueOnce({ items: [{
     _id: "existing-chat", title: "Example chat", access_level: "owner",
-    created_at: new Date(), updated_at: new Date(), participants: [],
+    created_at: new Date(), updated_at: new Date(), participants: [{ type: "agent", id: "example-agent" }],
     metadata: { conversation_surface: "agentic-app", agentic_app_id: "example", agentic_app_agent_id: "example-agent" },
   }], has_more: false } as never);
   expect((await findLatestAppConversation([], "example", "example-agent"))?.id).toBe("existing-chat");
@@ -21,4 +22,17 @@ it("finds an owned app conversation beyond page one without the sidebar filter",
 it("does not infer missing history when the server fails", async () => {
   jest.mocked(apiClient.getConversations).mockRejectedValueOnce(new Error("unavailable"));
   await expect(findLatestAppConversation([], "example", "example-agent")).rejects.toThrow("unavailable");
+});
+
+it("refreshes ownership and access for restored chats while preserving live local messages", () => {
+  const local: Conversation = { id: "saved-chat", title: "Old title", participants: [],
+    createdAt: new Date("2026-01-01"), updatedAt: new Date("2026-01-01"), messages: [], streamEvents: [] };
+  const saved = { _id: local.id, title: "Shared chat", participants: [], owner_id: "owner@example.test",
+    access_level: "shared_readonly" as const, created_at: "2026-01-01", updated_at: "2026-01-02" };
+  for (const previous of [[], [local]]) {
+    const [restored] = mergeAppConversation(previous, saved);
+    expect(restored).toMatchObject({ owner_id: "owner@example.test", accessLevel: "shared_readonly", title: "Shared chat" });
+    expect(restored.updatedAt).toEqual(new Date("2026-01-02"));
+    if (previous.length) expect(restored.messages).toBe(local.messages);
+  }
 });

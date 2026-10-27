@@ -1,18 +1,24 @@
 "use client";
 
-import { Archive } from "lucide-react";
+import { Archive, Pencil } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { NativeHostConversationActionsProps } from "../../app-sdk";
 import { ShareButton } from "@/components/chat/ShareButton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { apiClient } from "@/lib/api-client";
+import { getStorageMode } from "@/lib/storage-config";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useChatStore } from "@/store/chat-store";
 import { loadHostConversation } from "./host-chat";
 
-export default function HostConversationActions({ appId, conversationId, agentId, disabled, onArchived }:
+export default function HostConversationActions({ appId, conversationId, agentId, disabled, onArchived, onHistoryChange }:
   NativeHostConversationActionsProps & { appId: string }) {
   const [conversation, setConversation] = useState<Awaited<ReturnType<typeof loadHostConversation>>["saved"] | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [title, setTitle] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -42,9 +48,29 @@ export default function HostConversationActions({ appId, conversationId, agentId
     }
   }
 
+  async function rename() {
+    if (!title.trim() || disabled || pending || conversation?.access_level !== "owner") return;
+    setPending(true);
+    setError(null);
+    try {
+      if (getStorageMode() === "mongodb") await apiClient.updateConversation(conversationId, { title: title.trim() });
+      else await useChatStore.getState().updateConversationTitle(conversationId, title.trim());
+      useChatStore.setState(state => ({ conversations: state.conversations.map(item => item.id === conversationId
+        ? { ...item, title: title.trim() } : item) }));
+      setConversation({ ...conversation, title: title.trim() });
+      setRenaming(false);
+      onHistoryChange?.();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not rename this conversation"); }
+    finally { setPending(false); }
+  }
+
   return <div className="flex items-center gap-1" aria-label="Host conversation actions">
     {conversation?.access_level === "owner" && <>
-      {!disabled && !pending && (
+      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="h-6 w-6"
+        aria-label="Rename conversation" disabled={disabled || pending}
+        onClick={() => { setTitle(conversation.title); setError(null); setRenaming(true); }}><Pencil className="h-3 w-3" aria-hidden />
+      </Button></TooltipTrigger><TooltipContent>Rename conversation</TooltipContent></Tooltip>
+      {getStorageMode() === "mongodb" && !disabled && !pending && (
         <ShareButton conversationId={conversationId} conversationTitle={conversation.title}
           isOwner sharing={conversation.sharing} accessLevel="owner" />
       )}
@@ -53,6 +79,14 @@ export default function HostConversationActions({ appId, conversationId, agentId
         <Archive className="h-3 w-3" aria-hidden />
       </Button></TooltipTrigger><TooltipContent>Archive conversation</TooltipContent></Tooltip>
     </>}
-    {error && <p role="alert" className="max-w-48 text-xs text-destructive">{error}</p>}
+    <Dialog open={renaming} onOpenChange={setRenaming}><DialogContent>
+      <DialogHeader><DialogTitle>Rename conversation</DialogTitle></DialogHeader>
+      <form onSubmit={event => { event.preventDefault(); void rename(); }} className="space-y-3">
+        <Input aria-label="Conversation title" value={title} maxLength={120} onChange={event => setTitle(event.target.value)} autoFocus />
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        <Button type="submit" disabled={pending || !title.trim()}>Save</Button>
+      </form>
+    </DialogContent></Dialog>
+    {error && !renaming && <p role="alert" className="max-w-48 text-xs text-destructive">{error}</p>}
   </div>;
 }
