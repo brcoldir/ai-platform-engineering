@@ -1,3 +1,18 @@
+## 1.3.0-rc.26 (2026-10-28)
+
+### Feat
+
+- **home**: show starred apps in movable Favorites widget (#3125)
+- **chat**: stage app Markdown attachments in assistant composer (#3124)
+
+### Fix
+
+- **security**: block deepmerge prototype poisoning (#3126)
+- **ui**: gate and suspend denied admin migration polling (#3118)
+- **ui**: avoid Webex lookup when resolving chat defaults (#3123)
+- **chat**: show attached page context in assistant (#3122)
+- **ui**: keep breadcrumb icons beside labels (#3121)
+
 ## 1.3.0-rc.25 (2026-10-28)
 
 ### Fix
