@@ -191,7 +191,10 @@ Catalog cards use the first declared `catalog.categories` value for their badge
 and color treatment. Valid packaged `catalog.icon` assets take precedence over
 the category fallback icon. Each user can favorite visible apps in the Apps
 catalog; favorites are stored in user preferences and do not change app access
-or sharing permissions.
+or sharing permissions. Home shows a separate, reorderable Favorite Apps widget
+below Quick Start when the user has at least one starred app they can launch.
+The widget stays hidden when there are no accessible favorites. Home reads the
+favorite IDs first and skips the catalog request when none are saved.
 
 ### UI-only and service-only apps
 
