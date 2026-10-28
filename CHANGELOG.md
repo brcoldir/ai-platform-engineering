@@ -1,3 +1,9 @@
+## 1.3.0-rc.25 (2026-10-28)
+
+### Fix
+
+- **ui**: keep host breadcrumbs on one line (#3120)
+
 ## 1.3.0-rc.24 (2026-10-28)
 
 ### Fix
