@@ -1,3 +1,9 @@
+## 1.3.0-rc.23 (2026-10-28)
+
+### Feat
+
+- **auth**: add host-owned secondary authentication (#3116)
+
 ## 1.3.0-rc.22 (2026-10-28)
 
 ### Fix
