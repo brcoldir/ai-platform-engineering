@@ -1,3 +1,15 @@
+## 1.3.0-rc.21 (2026-10-28)
+
+### Feat
+
+- **agentic-apps**: bring catalog presentation and favorites upstream (#3109)
+- **keycloak**: make MCP DCR opt-in with resource isolation (#2661)
+
+### Fix
+
+- **credentials**: reuse OAuth tokens outside refresh window (#3002)
+- **auth**: prevent OIDC refresh retry loops (#2774)
+
 ## 1.3.0-rc.20 (2026-10-27)
 
 ### Fix
