@@ -1,3 +1,9 @@
+## 1.3.0-rc.24 (2026-10-28)
+
+### Fix
+
+- **apps**: bundle Tome catalog logo in host (#3119)
+
 ## 1.3.0-rc.23 (2026-10-28)
 
 ### Feat
