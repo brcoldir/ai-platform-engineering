@@ -1,3 +1,11 @@
+## 1.3.0-rc.22 (2026-10-28)
+
+### Fix
+
+- **ui**: preserve project app navigation appearance (#3114)
+- **keycloak**: hide platform scope from OAuth discovery (#3115)
+- **credentials**: reject revoked provider connections (#3113)
+
 ## 1.3.0-rc.21 (2026-10-28)
 
 ### Feat
