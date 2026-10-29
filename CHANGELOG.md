@@ -1,3 +1,10 @@
+## 1.3.2 (2026-10-29)
+
+### Fix
+
+- **webex-bot**: bound streamed replies and preserve full responses (#3046)
+- **webex-bot**: separate agent display name from bot mention (#2979)
+
 ## 1.3.1 (2026-10-29)
 
 ### Fix
@@ -316,15 +323,28 @@
 - **chat**: unify conversation history and queued turns (#2778)
 - **chat**: edit messages and rewind conversations (#2781)
 - **chat**: show context remaining before compaction (#2779)
-- **jira**: support native ADF in comments and descriptions (#2766)
 
 ### Fix
 
 - **audit**: audit bulk authorization as one event instead of one per resource (#2777)
 - **insights**: scope conversations across chat surfaces (#2780)
+
+## 1.2.0-rc.4 (2026-09-21)
+
+### Fix
+
 - **helm**: support bridge image pull secrets (#2398)
 - **deps**: bump cnoe-agent-utils 0.4.1 -> 0.4.2 for Sonnet 5 temperature fix (#2776)
 - **ci**: drop unused GitHub App token steps (#2772)
+
+## 1.2.0-rc.3 (2026-09-18)
+
+### Feat
+
+- **jira**: support native ADF in comments and descriptions (#2766)
+
+### Fix
+
 - **ui**: resolve origin scheme mismatch in platform-health audit (#2752)
 - **ci**: allow manual prebuild dispatch for fork PRs
 - **ci**: package canary Helm charts under a valid SemVer placeholder (#2768)
@@ -364,6 +384,8 @@
 
 ## 1.2.0-dev.5 (2026-09-15)
 
+## 1.2.0-rc.2 (2026-09-15)
+
 ## 1.2.0-dev.4 (2026-09-15)
 
 ### Fix
@@ -393,6 +415,8 @@
 - **rag**: keep unlinked SA edit UX in sync, fix long scope-list usability
 
 ## 1.2.0-dev.1 (2026-09-14)
+
+## 1.2.0-rc.1 (2026-09-14)
 
 ## 1.1.0 (2026-09-14)
 
